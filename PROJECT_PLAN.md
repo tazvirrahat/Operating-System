@@ -5,7 +5,15 @@
 **Plan revised:** 12 August 2026 — architecture changed from ARM to x86 (see §1.1)
 **Target:** A bare-metal 32-bit x86 kernel that boots under GRUB, preempts tasks via hardware timer interrupts, manages its own heap, handles keyboard input, and runs an interactive shell with a live kernel monitor — developed in QEMU, with a stretch goal of booting on real hardware (AMD Ryzen 5 5600G).
 
-> **Companion document:** [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) — the submission write-up, including the challenges log in STAR format. **Fill it in as you build, not at the end.** This file is the plan (forward-looking, used during development); that file is the report (backward-looking, describing what actually happened).
+> ## Status: Tier 1, Tier 2 and Tier 3 complete
+>
+> All "must have" items in §6 are done, plus both Tier 3 stretch features (ring 3 with system calls, and paging). The kernel boots, runs 21 self-test checks, and drops into a shell with 15 commands. See [`README.md`](README.md) for what it does and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3 for the eleven real bugs hit on the way.
+>
+> **Not done:** booting on real hardware (§3, Tier 3 item 21). It has only ever run under QEMU.
+>
+> The schedule in §5 is left as originally written, because the gates in it are the part worth keeping — they are what a plan is for, and the report's reflection section refers back to them.
+
+> **Companion document:** [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) — the submission write-up, including the challenges log in STAR format. This file is the plan (forward-looking, written before the work); that file is the report (backward-looking, describing what actually happened).
 
 ---
 
@@ -394,28 +402,28 @@ Tier 1 + Tier 2 is **~40 hours**. At 1 hour/day for 10 days, one person has **10
 ## 6. Definition of done
 
 ### Must have
-- [ ] Boots under GRUB in QEMU without crashing
-- [ ] Prints a banner to VGA text mode
-- [ ] Serial debug logging to a file
-- [ ] IDT installed; CPU exceptions print diagnostics rather than triple-faulting
-- [ ] PIC remapped; PIT firing at a known frequency
-- [ ] Keyboard input working, interrupt-driven
-- [ ] **Preemptive** multitasking — ≥3 tasks, no voluntary yielding
-- [ ] `preempt off` ablation demonstrably breaks scheduling
-- [ ] `kmalloc`/`kfree` with `meminfo` output
-- [ ] Mutex — race demo fails without it, passes with it, across repeated runs
-- [ ] Shell with ≥8 working commands
-- [ ] `top` monitor reading live kernel state
-- [ ] `demo` and `selftest` commands
-- [ ] `make run` works from a clean clone
-- [ ] README with build instructions, architecture notes, and demo GIF
-- [ ] [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) complete
+- [x] Boots under GRUB in QEMU without crashing
+- [x] Prints a banner to VGA text mode
+- [x] Serial debug logging to a file
+- [x] IDT installed; CPU exceptions print diagnostics rather than triple-faulting
+- [x] PIC remapped; PIT firing at a known frequency
+- [x] Keyboard input working, interrupt-driven
+- [x] **Preemptive** multitasking — ≥3 tasks, no voluntary yielding
+- [x] `preempt off` ablation demonstrably breaks scheduling
+- [x] `kmalloc`/`kfree` with `meminfo` output
+- [x] Mutex — race demo fails without it, passes with it, across repeated runs
+- [x] Shell with ≥8 working commands — 15 implemented
+- [x] `top` monitor reading live kernel state
+- [x] `demo` and `selftest` commands — 21 checks
+- [x] `make run` works from a clean clone
+- [x] README with build instructions, architecture notes, and screenshots
+- [x] [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) complete
 
 ### Stretch
-- [ ] Ring 3 with `int 0x80` syscalls
-- [ ] Paging enabled; page fault reports `CR2` correctly
-- [ ] **Booted on real hardware (5600G) from USB — with video**
-- [ ] Semaphore-based producer/consumer
+- [x] Ring 3 with `int 0x80` syscalls
+- [x] Paging enabled; page fault reports `CR2` correctly
+- [x] Semaphore implemented (producer/consumer pattern not built on top of it)
+- [ ] **Booted on real hardware (5600G) from USB — not attempted, QEMU only**
 - [ ] Command history (up arrow)
 
 ### Presentation deliverable

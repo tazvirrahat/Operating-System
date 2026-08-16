@@ -5,369 +5,379 @@
 **Authors:** *(names)*
 **Repository:** *(URL)*
 
-> **Companion document:** [`PROJECT_PLAN.md`](PROJECT_PLAN.md) — the development plan (component breakdown, schedule, technical reference). This document is the report: what was actually built, what went wrong, and what we did about it.
+> **Companion document:** [`PROJECT_PLAN.md`](PROJECT_PLAN.md) — the development plan. This document is the report: what was built, what went wrong, and what was done about it.
 >
-> **⚠ This document is a template with a pre-seeded challenge log. It describes work that has not happened yet.** Sections marked *(Fill in)* must be completed from real experience. See §3 for how to use the STAR entries.
+> **Note on §3.** The challenges below are real: every one was encountered while building this kernel, and each is traceable to the commit that fixed it. Before submitting, read through them and make sure you can explain each fix in your own words — a marker is entitled to ask, and these are the parts of the project most worth understanding.
 
 ---
 
 ## 1. Project overview
 
-*(Fill in on completion — the draft below is a starting point.)*
+We implemented a bare-metal operating system kernel for 32-bit x86, developed under QEMU and booted by GRUB using the Multiboot standard. The kernel runs with no underlying operating system, no standard library and no runtime support: it establishes its own stack, installs its own descriptor tables, drives hardware through port I/O and memory-mapped registers, and manages its own memory.
 
-We implemented a bare-metal operating system kernel for the 32-bit x86 architecture, developed under QEMU and booted via GRUB using the Multiboot standard. The kernel runs with no underlying operating system, no standard library and no runtime support: it establishes its own stack, installs its own descriptor tables, drives hardware peripherals through port I/O and memory-mapped registers, and manages its own memory.
+The system demonstrates the core concerns of an operating system:
 
-The system demonstrates the core concerns of an operating system: **preemptive multitasking** driven by the programmable interval timer, **dynamic memory management** via a custom heap allocator, **synchronisation** through mutual exclusion primitives, **interrupt-driven device I/O** from a PS/2 keyboard, and **fault handling** through the interrupt descriptor table. *(If Tier 3 completed, add: and **privilege separation** between ring 0 and ring 3, mediated by software-interrupt system calls.)*
+- **Preemptive multitasking** — a round-robin scheduler driven by the programmable interval timer, switching tasks that never yield voluntarily
+- **Dynamic memory management** — a first-fit heap allocator with block splitting, coalescing and corruption detection
+- **Synchronisation** — spinlock, mutex and counting semaphore, with a race condition demonstrated failing before it is fixed
+- **Interrupt-driven device I/O** — a PS/2 keyboard driver decoding raw scancodes into a ring buffer
+- **Fault handling** — CPU exceptions caught, diagnosed and contained, killing the offending task while the kernel survives
+- **Virtual memory** — paging with mixed page sizes, page 0 deliberately unmapped so that null dereferences fault
+- **Privilege separation** — user tasks in ring 3 whose only route into the kernel is a single system call gate
 
-Interaction is through an interactive shell rendered in VGA text mode, including a live kernel monitor displaying scheduler and heap state in real time, and a `selftest` command that verifies each subsystem by assertion.
+Interaction is through a shell rendered in VGA text mode, with a live kernel monitor and a `selftest` command running 21 automated checks.
+
+Roughly 4,200 lines across 44 files.
 
 ### 1.1 Architecture decision
 
-*(Fill in — this is a genuine decision worth documenting.)*
+The project initially targeted ARMv6 on an emulated Raspberry Pi and was changed to x86 before implementation began. In summary: first screen output reduces from roughly forty lines of UART initialisation to a single memory write; keyboard input becomes feasible at all (PS/2 rather than a USB host stack of some ten thousand lines); tutorial coverage is far denser; and the result can be booted on the team's own hardware.
 
-The project initially targeted ARMv6 on an emulated Raspberry Pi and was changed to x86 before implementation began. The reasoning is recorded in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §1.1; in summary: first screen output reduces from ~40 lines of UART initialisation to a single memory write; keyboard input becomes feasible (PS/2 rather than a USB host stack); tutorial coverage is far denser; and the result can be booted on the team's own hardware. The commonly-cited x86 boot complexity was avoided entirely by delegating to GRUB via Multiboot.
+The usual objection to x86 — the boot sector, real mode and mode-switching sequence — does not apply when using GRUB, which hands over a CPU already in 32-bit protected mode. The entire legacy boot problem is delegated to code we did not have to write.
 
-We targeted 32-bit protected mode rather than 64-bit long mode because long mode requires paging to be configured before any output is possible, which forces the hardest component to be solved first.
+We targeted 32-bit protected mode rather than 64-bit long mode because long mode requires paging to be configured *before* any output is possible, which forces the hardest component to be solved first, blind.
 
 ### 1.2 Scope and deliberate exclusions
 
-*(Fill in — state what you built and, importantly, what you consciously did not. Naming excluded components with reasons demonstrates engineering judgement; silence reads as ignorance.)*
+Excluded by design: custom bootloader, 64-bit long mode, filesystem, GUI/windowing, web browser and SMP. Rationale for each is in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §3 and summarised in the README.
 
-Excluded by design: custom bootloader, 64-bit long mode, filesystem, GUI/windowing, web browser, and SMP. Rationale for each is recorded in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §3. The browser exclusion in particular is worth stating explicitly — it requires a USB stack, a network driver, a TCP/IP implementation and a TLS implementation before any HTML is parsed, and the dependency chain is what makes it infeasible rather than the rendering itself.
+The browser exclusion is worth stating explicitly because it was asked about directly. A browser requires, in order: a USB host stack, a network driver, a TCP/IP implementation (lwIP, a deliberately minimal one, is around 40,000 lines), a TLS implementation (mbedTLS is around 100,000), an HTTP client, and only then HTML, CSS and JavaScript engines. The dependency chain is the obstacle, not the rendering. Recognising that is the useful part.
+
+### 1.3 Known limitations
+
+Stated here rather than left to be discovered:
+
+- **Memory is not isolated between ring 0 and ring 3.** The whole first 4 MB is marked user-accessible, so a ring 3 task could read kernel memory. What *is* enforced is instruction privilege — user code cannot perform port I/O or execute privileged instructions, and the CPU kills it for trying. Proper isolation would require giving user code its own linker section on its own pages.
+- **System call arguments are not validated.** `SYS_WRITE` dereferences a user-supplied pointer without checking it.
+- **The scheduler is round-robin only** — no priorities, no aging. `sem_wait` yields in a loop rather than sleeping on a wait queue.
+- **The race-variance self-test is statistical** and could in principle flake, since how many updates are lost depends on where preemption happens to land.
 
 ---
 
 ## 2. System architecture
 
-*(Fill in on completion. Keep this brief — the plan holds the full reference. Describe what was actually implemented, not what was intended.)*
-
 ### 2.1 Boot sequence
 
-*(Fill in: GRUB reads the Multiboot header → loads the kernel at `0x100000` in 32-bit protected mode → `_start` in `boot.S` sets the stack → `kmain` initialises subsystems in order → scheduler starts.)*
+GRUB locates a multiboot header within the first 8 KB of the kernel image, loads the kernel at physical address `0x100000` with the CPU already in 32-bit protected mode, and jumps to `_start`. That stub sets the stack pointer, pushes the multiboot magic and info pointer, and calls `kmain`.
+
+Subsystems then come up in dependency order, chosen so that each is diagnosable using the ones before it:
+
+```
+console (VGA + serial)   output first: nothing after this is debuggable without it
+  -> gdt                 our own segments, replacing GRUB's temporary ones
+  -> isr / idt           from here a fault prints a diagnostic instead of resetting
+  -> pic                 remap IRQs off the exception vectors
+  -> pit                 100 Hz heartbeat
+  -> keyboard            interrupt-driven input
+  -> paging              MMU on; needs the IDT so page faults have somewhere to land
+  -> heap                needs mapped memory
+  -> tasks + syscalls    need the heap for stacks
+  -> selftest -> shell
+```
 
 ### 2.2 Components implemented
 
-| Component | File(s) | Status | Notes |
-|---|---|---|---|
-| Multiboot header / entry | `boot.S` | | |
-| Linker script | `linker.ld` | | |
-| VGA text driver | `vga.c` | | |
-| Serial debug channel | `serial.c` | | |
-| GDT | `gdt.c` | | |
-| IDT + ISR stubs | `idt.c`, `isr.S` | | |
-| PIC remap | `pic.c` | | |
-| PIT timer | `pit.c` | | |
-| PS/2 keyboard | `keyboard.c` | | |
-| Context switch | `context.S` | | |
-| Scheduler | `task.c` | | |
-| Heap allocator | `heap.c` | | |
-| Synchronisation | `sync.c` | | |
-| Shell | `shell.c` | | |
-| Kernel monitor | `monitor.c` | | |
-| `demo` / `selftest` | `demo.c`, `selftest.c` | | |
-| System calls (ring 3) | `syscall.c` | | Tier 3 |
-| Paging | `paging.c` | | Tier 3 |
-| Real-hardware boot | — | | Tier 3 |
+| Component | File(s) | Notes |
+|---|---|---|
+| Multiboot header, entry | `boot.asm` | Stack setup, BSS handled by linker |
+| Memory layout | `linker.ld` | Places `.multiboot` first; discards build-id and `.eh_frame` |
+| VGA text driver | `vga.c` | `0xB8000`, scrolling, colour, hardware cursor |
+| Serial driver | `serial.c` | COM1, polled; survives crash-reboot |
+| Console | `console.c` | `kprintf` with width/alignment/fill, `panic` |
+| GDT + TSS | `gdt.c` | 6 descriptors, ring 0 and ring 3, TSS for stack switching |
+| IDT | `idt.c` | 256 entries; unused vectors marked not-present |
+| Interrupt dispatch | `isr.asm`, `isr.c` | Uniform frames, separate error-code stubs |
+| PIC | `pic.c` | Remapped to vectors 32–47 |
+| Timer | `pit.c` | 100 Hz; exposes a callback rather than calling the scheduler |
+| Keyboard | `keyboard.c` | Scancode set 1, make/break, shift, caps, ring buffer |
+| Paging | `paging.c` | 4 KB pages for the first 4 MB, 4 MB pages above; page 0 unmapped |
+| Heap | `heap.c` | First-fit, splitting, coalescing, magic headers |
+| Context switch | `context.asm` | Callee-saved registers plus eflags, `esp` swap |
+| Scheduler | `task.c` | Round-robin, preemptive, stack guard words, reaping |
+| Synchronisation | `sync.c` | Spinlock, mutex, semaphore, atomic `xchg` |
+| System calls | `syscall.c` | `int 0x80`, DPL 3 gate, ring 3 entry via `iret` |
+| Shell | `shell.c` | 15 commands, tokeniser, dispatch table |
+| Monitor | `monitor.c` | Live task/heap/IRQ display |
+| Demos, self-test | `demos.c`, `selftest.c` | Shared by the shell and the automated checks |
 
 ### 2.3 Key design decisions
 
-*(Fill in. Candidates: GRUB/Multiboot over a custom bootloader; 32-bit over 64-bit; round-robin over priority scheduling; 4 MB PSE pages over two-level 4 KB paging; interrupt-driven keyboard over polling; serial logging alongside VGA output.)*
+**GRUB and Multiboot over a custom bootloader.** Delegates the legacy boot sequence entirely. What is learned by writing a boot sector is BIOS trivia, not operating-system concepts.
+
+**Dependency inversion at two boundaries.** The PIT exposes `pit_on_tick(callback)` rather than calling the scheduler directly, and the keyboard fills a ring buffer without knowing who drains it. Both keep the lower layer testable on its own and prevent the scheduler and shell from becoming load-bearing for device drivers.
+
+**Two output channels behind one interface.** Every module calls `kprintf`; the console decides that output goes to both VGA and serial. Serial output is what survives a crash-reboot, and QEMU can log it to a file — which is what makes post-mortem debugging possible at all when the machine resets.
+
+**Mixed page sizes.** 4 MB pages above the first 4 MB need no second level at all. The first 4 MB uses 4 KB granularity purely so that a *single* page at address zero can be left unmapped; a 4 MB page there would force a choice between mapping the kernel (which lives at 1 MB) and trapping null dereferences.
+
+**Demos shared between the shell and the self-test.** A demonstration a human watches and an assertion a machine checks should not be two implementations that can drift apart.
 
 ---
 
 ## 3. Challenges encountered (STAR format)
 
-Each challenge is documented in STAR format:
+Each challenge is documented as:
 
 - **Situation** — what the challenge was
-- **Task** — what we were doing previously / the approach in place before the problem appeared
-- **Action** — what we did to address it
-- **Result** — the outcome of that action
+- **Task** — the approach in place before the problem appeared
+- **Action** — what was done to address it
+- **Result** — the outcome
 
-### How to use this section
-
-**Entries 3.2 onward are anticipated challenges**, pre-seeded with **Situation** and **Task** partially written. These are well-documented x86 bare-metal failure modes that we expect to encounter. Each carries a *"lines of investigation"* note to speed up diagnosis when it happens.
-
-**Action and Result must be written by whoever actually hits the problem, describing what actually occurred.** Do not submit an entry with an invented Action or Result. **If a listed challenge never happens, delete the entry** — a shorter honest report is worth more than a padded one. Equally, add entries for problems not anticipated here; those are often the most interesting.
-
-**Write entries the same day the problem is solved.** Reconstructed a week later they lose the specific detail — the exact error, the tool that revealed it, the false lead followed first — that makes them credible.
-
-§3.1 is a **worked example demonstrating expected depth**. It has not happened. **Delete it before submission.**
+A recurring theme runs through these and is worth stating up front: **on bare metal, "it compiled" carries almost no information about correctness.** There is no runtime, no loader and no operating system to catch anything, so the layout of the binary, the ordering of hardware operations, and what the optimiser decided to do with your code are all part of the program's correctness.
 
 ---
 
-### 3.1 EXAMPLE ENTRY — demonstrates expected depth — DELETE BEFORE SUBMISSION
+### 3.1 GRUB refused to load the kernel: header one byte out of range
 
-**Situation.** GRUB loaded and displayed its menu, but selecting our kernel produced the error `error: no multiboot header found` and returned to the menu. The kernel compiled and linked without warnings, and the header struct was clearly present in the source, so the failure gave us no indication of what was actually wrong.
+**Situation.** The kernel compiled and linked cleanly, but GRUB rejected it with `no multiboot header found`. The header struct was plainly present in the source and the magic constant was correct, so the error gave no indication of what was actually wrong.
 
-**Task.** We had been building with a simple `gcc` invocation and linking with default settings, assuming that any symbol defined in the source would appear in the output binary. Our first instinct was that the header constants were wrong, so we spent time re-checking the magic value and checksum arithmetic against the Multiboot specification — all of which were correct.
+**Task.** We had written the multiboot header as an assembly section and assumed that any section defined in the source would appear near the start of the output binary. Debugging began by re-checking the magic value and the checksum arithmetic against the Multiboot specification — all of which were correct.
 
-**Action.** We inspected the produced binary rather than the source. `objdump -s -j .multiboot kernel.elf` showed the section existed, but `readelf -S kernel.elf` revealed it had been placed after `.text`, roughly 40 KB into the file. The Multiboot specification requires the header within the **first 8 KB**. We added an explicit output section to `linker.ld` placing `.multiboot` first, before `.text`, and marked the header struct with `__attribute__((section(".multiboot"), aligned(4)))` so it could not be reordered or discarded.
+**Action.** We stopped reading the source and inspected the produced binary instead. `objdump -h` showed `.text` at file offset `0x2000`, and searching the raw bytes with `od` located the magic value at **file offset 8192** — while GRUB only scans the first 8192 bytes, offsets 0 to 8191. The header was one byte outside the search window.
 
-**Result.** GRUB loaded the kernel on the next attempt. The wider lesson was that on bare metal the *layout* of the binary is part of the program's correctness, not an implementation detail the toolchain can be trusted to handle — the linker will happily produce a well-formed ELF file that no bootloader can load. We began checking `readelf -S` output as a routine step after any change to the build, which caught a second layout problem later in the project before it cost us time.
+The cause was a section we had not written: the linker was placing `.note.gnu.build-id` first, at `0x100000`, where it consumed the first page and pushed `.text` (and with it the multiboot header) onto the next one. We added `-Wl,--build-id=none` to the link flags and an explicit `/DISCARD/` block in the linker script covering the note sections and `.eh_frame`.
 
----
-
-### 3.2 GRUB reports "no multiboot header found"
-
-**Situation.** GRUB starts but refuses to load the kernel, reporting a missing Multiboot header despite the header being present in the source.
-
-**Task.** *(Fill in: what was your build and linking setup before this?)*
-
-**Action.** *(Fill in)*
-
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** Header not within the first 8 KB of the binary (fix by ordering `.multiboot` before `.text` in the linker script); header not 4-byte aligned; checksum arithmetic wrong (must satisfy `magic + flags + checksum == 0` in 32-bit wraparound); the struct discarded by the linker as unused — mark it `__attribute__((used))` or reference it from `_start`.
+**Result.** GRUB loaded the kernel on the next attempt, with `.text` at file offset 4096, comfortably inside the window. `grub-file --is-x86-multiboot` was added to the build as a hard check so this class of failure can never again reach the point of being debugged interactively. More broadly, this established inspecting the binary rather than the source as the first debugging step, which paid off repeatedly.
 
 ---
 
-### 3.3 QEMU reboots in a loop — triple fault
+### 3.2 Two source files silently overwriting each other's object file
 
-**Situation.** The QEMU window clears and restarts repeatedly, with no error message and no output surviving the reset. This is the characteristic x86 beginner failure and it destroys all evidence of what went wrong.
+**Situation.** After adding interrupt handling, the link failed with `undefined reference to isr_handler` — for a function that plainly existed and had compiled without error. Simultaneously it reported `multiple definition of irq15`, pointing at the same file as both the duplicate and the original.
 
-**Task.** *(Fill in)*
+**Task.** The Makefile derived object names by pattern substitution, mapping `kernel/%.c` and `kernel/%.asm` onto `build/%.o`.
 
-**Action.** *(Fill in)*
+**Action.** The contradictory pair of errors — a symbol both missing and duplicated — pointed at the build rather than the code. `kernel/isr.c` and `kernel/isr.asm` both mapped to `build/isr.o`. Whichever compiled last overwrote the other, so the C symbols and the assembly symbols could never both be present. We changed assembly objects to a `.asm.o` suffix.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** A triple fault is an exception raised while handling an exception while handling an exception, and the CPU responds by resetting. Common causes: no IDT installed yet (any fault is unrecoverable); malformed IDT entries (wrong gate type, wrong selector, offset split incorrectly across the two halves); a bad GDT; stack pointer pointing at unmapped memory; paging enabled without the kernel identity-mapped.
->
-> **Diagnostic tools:** `qemu -d int,cpu_reset` prints every interrupt and the CPU state at reset. `-no-reboot -no-shutdown` freezes the machine instead of rebooting so the state can be inspected. Serial logging to a file (`-serial file:log.txt`) preserves output across the reset. **Set up serial logging before you need it** — after a triple fault it is too late.
+**Result.** The link succeeded. The suffix also pre-empts the same collision for the `context.c`/`context.asm` pair added later, which would otherwise have reproduced the bug in a subtler form once the scheduler existed.
 
 ---
 
-### 3.4 Nothing appears on screen despite writing to `0xB8000`
+### 3.3 Acknowledging an interrupt after a handler that never returns
 
-**Situation.** The VGA write executes and is definitely reached, but the screen stays blank or shows garbage.
+**Situation.** Anticipated rather than observed. While writing the scheduler it became clear that the timer would stop firing permanently on the first switch to a newly created task.
 
-**Task.** *(Fill in)*
+**Task.** The IRQ dispatcher followed the conventional shape: call the registered handler, then send the end-of-interrupt byte to the PIC.
 
-**Action.** *(Fill in)*
+**Action.** The timer handler drives the scheduler, and a context switch does not return — it swaps stacks and resumes a different task. If that task was newly created it has never been inside the dispatcher, so an EOI placed *after* the handler call would simply never execute. The PIC would continue to believe IRQ 0 was in service and deliver no further timer interrupts: the scheduler would run exactly once and the machine would freeze with no diagnostic. We moved the EOI to before the handler call, which is safe because interrupt gates clear the interrupt flag on entry, so no nested interrupt can arrive in the interim.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** Wrong cell format — each cell is *two* bytes (character in the low byte, attribute in the high byte), so writing bytes rather than 16-bit words produces garbage; attribute byte zero means black-on-black (invisible); missing `volatile` on the pointer, allowing the optimiser to delete the store; writing past the 80×25 bounds; after paging is enabled, `0xB8000` no longer mapped.
+**Result.** Preemption worked on the first attempt. This is the one significant problem in the project that was reasoned about in advance rather than discovered by debugging, and the contrast is instructive: it would have presented as a total freeze with no output, which is among the hardest symptoms to work backwards from.
 
 ---
 
-### 3.5 Timer IRQ collides with the divide-by-zero exception
+### 3.4 Format specifiers printed literally, corrupting every argument after them
 
-**Situation.** Enabling interrupts causes apparently random divide-error exceptions, or the timer handler runs when no timer was expected.
+**Situation.** The per-task CPU time table rendered as `%-10s id=1089572 state=%-8s ticks=1`, with the format specifiers appearing verbatim and the task IDs showing implausible values.
 
-**Task.** *(Fill in)*
+**Task.** `kprintf` had been written to handle a bare conversion character plus an optional zero-padded width, which was all the boot messages had needed.
 
-**Action.** *(Fill in)*
+**Action.** The specifiers were being echoed because `%-10s` was unsupported, but the more serious effect was invisible: the parser consumed the wrong number of variadic arguments, so every subsequent value in the call was read from the wrong stack slot. The implausible IDs were the *name pointers* being printed as integers. We rewrote the formatter to render each field into a buffer first and then apply width, alignment and fill separately, adding support for `-` and space fill, and taking care that a minus sign precedes zero padding rather than being buried inside it.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** The PIC delivers IRQ 0 on vector 0 by default, which is also the CPU's divide-error exception vector — the two are genuinely indistinguishable. The PIC must be remapped so hardware IRQs arrive on vectors 32–47. This is mandatory on x86 and has no ARM equivalent, so tutorials from other architectures will not warn about it.
+**Result.** Tables render correctly, which the kernel monitor depends on entirely. The instructive part is that the visible symptom (literal `%-10s`) was cosmetic while the invisible one (misaligned varargs) was producing confidently wrong numbers — output that looked like data.
 
 ---
 
-### 3.6 Timer interrupt fires exactly once
+### 3.5 The race condition demo produced the correct answer
 
-**Situation.** The first timer interrupt is delivered and handled correctly, but no further interrupts ever arrive.
+**Situation.** The self-test asserted that two tasks incrementing a shared counter without a lock would lose updates. Every run returned exactly the expected total, so the demonstration proved nothing.
 
-**Task.** *(Fill in)*
+**Task.** Each racer performed a read, a short fixed-length delay loop, and a write, repeated several thousand times.
 
-**Action.** *(Fill in)*
+**Action.** The window between read and write was far too narrow relative to the timeslice: at 50 ms per slice and a critical section lasting a microsecond or two, the chance of preemption landing between the read and the write was roughly one in twenty-five thousand per iteration. A fixed spin count is the wrong instrument regardless, because how long it takes depends entirely on the host CPU.
 
-**Result.** *(Fill in)*
+We tied the width of the window to the same clock that drives preemption instead. The kernel now measures at runtime how many spin iterations fit inside one timer tick, then holds each update open for a randomised fraction of that. The timeslice was also shortened from five ticks to one.
 
-> **Lines of investigation:** The End Of Interrupt (EOI) byte `0x20` was never sent to the PIC command port (`0x20` for master, and *both* `0xA0` and `0x20` for slave IRQs), so the PIC believes the interrupt is still in service and blocks further delivery. Also check that the handler returns with `iret` rather than `ret`, and that interrupts were re-enabled.
-
----
-
-### 3.7 Interrupt handler corrupts the interrupted code
-
-**Situation.** Interrupts are delivered and the handler appears to run correctly, but the interrupted code subsequently misbehaves or crashes.
-
-**Task.** *(Fill in)*
-
-**Action.** *(Fill in)*
-
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** A C function used directly as an interrupt handler does not preserve the right state. The assembly stub must push the full register set (`pusha`), set up segment registers, call the C handler, restore (`popa`), and return with `iret` — which pops `EIP`, `CS` and `EFLAGS`, unlike `ret`. Exceptions that push an error code (8, 10–14, 17) need a different stub from those that do not, or the stack becomes misaligned.
+**Result.** Updates are now reliably lost, and — after a further correction, below — by a varying amount.
 
 ---
 
-### 3.8 Context switch corrupts task state
+### 3.6 The same demo then became *too* reliable
 
-**Situation.** Tasks begin switching but then crash, produce corrupted output, or resume at the wrong address.
+**Situation.** Having made the race fire, the total pinned to exactly half the expected value on every run. The self-test's separate assertion that results vary between runs began failing, on roughly one boot in three.
 
-**Task.** *(Fill in)*
+**Task.** Each iteration waited for the tick counter to change before writing back.
 
-**Action.** *(Fill in)*
+**Action.** Waiting on the clock edge made both racers wait on the *same* edge. They fell into lockstep, lost an update on every single iteration, and produced a result reproducible to the digit. That still demonstrates a race, but a number identical on every run is indistinguishable from a hardcoded one, which undermines the reason for showing it.
 
-**Result.** *(Fill in)*
+The window was narrowed to a randomised span of up to a quarter of a tick's work. The quarter matters: the calibration measures spinning while running alone, but two racers share the CPU, so the same work occupies roughly twice the wall-clock time — a window sized at a full tick again exceeds a timeslice and returns the loss probability to near certainty.
 
-> **Lines of investigation:** Incomplete register save/restore; `esp` swapped at the wrong point relative to the pushes; a newly created task's stack not pre-populated with a plausible initial frame (a fresh task has no saved state to restore, so the stack must be constructed by hand to look as if it had been interrupted); `EFLAGS` not preserved, losing the interrupt-enable flag; switching inside the IRQ handler without accounting for the frame `iret` expects to find.
-
----
-
-### 3.9 Stack collision between tasks
-
-**Situation.** Adding a third or fourth task causes unrelated tasks to misbehave, or the kernel crashes in previously stable code.
-
-**Task.** *(Fill in)*
-
-**Action.** *(Fill in)*
-
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** Task stacks allocated too small or placed adjacently with no guard region, so one task's descending stack grows into another's data. Consider writing a known guard word at the base of each stack and checking it on every context switch — this converts a silent corruption into an immediate, diagnosable failure.
+**Result.** Totals now scatter — `93 78 84 63 89` across five runs — with the locked variant exact every time. Verified stable across four consecutive boots. The lesson is that a demonstration can fail by being too deterministic as easily as by not firing at all.
 
 ---
 
-### 3.10 Keyboard produces wrong or duplicated characters
+### 3.7 A stale object file compiled against an old constant
 
-**Situation.** Keystrokes register but produce incorrect characters, or each key appears twice.
+**Situation.** After reducing a constant in `demos.h` from 8000 to 100, the self-test continued printing `expected 8000` while the demo itself used the new value. Source and binary disagreed with no warning from anywhere.
 
-**Task.** *(Fill in)*
+**Task.** The Makefile declared object files as depending on their `.c` file only.
 
-**Action.** *(Fill in)*
+**Action.** `selftest.c` had not itself changed, so make saw no reason to rebuild it, and `selftest.o` remained linked against the previous value of a macro defined in a header. We added `-MMD -MP` to the compile flags, which emit a dependency file per object listing every header it included, and an `-include` of those files in the Makefile.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** Scancode set 1 sends a *make* code on press and a *break* code on release (make code + `0x80`); handling both as presses doubles every character. Extended keys (arrows, right-control) are prefixed with `0xE0` and need a state machine. Shift and caps-lock require tracking modifier state rather than a flat lookup table.
+**Result.** Editing a header now rebuilds everything that uses it. This is ordinary practice in any C project, but its absence is unusually confusing here because the failure presents as code that appears to ignore its own source.
 
 ---
 
-### 3.11 Race condition demo produces the correct result without a lock
+### 3.8 The compiler deleted a deliberate divide-by-zero
 
-**Situation.** The deliberately unsynchronised counter demonstration returns the expected total, so the race condition we intended to demonstrate does not manifest.
+**Situation.** The `fault div0` command reported `still alive - the fault did not fire`. No exception was raised, and the task ran to completion.
 
-**Task.** *(Fill in)*
+**Task.** The fault was written in C as a division by a variable holding zero, marked `volatile` specifically so the compiler could not fold the operation away.
 
-**Action.** *(Fill in)*
+**Action.** Disassembling the object file showed **no division instruction at all**. gcc had emitted a comparison and a conditional move: `1 / x` is nonzero only for `x` equal to 1 or -1, and division by zero is undefined behaviour, so the compiler is entitled to assume the case never occurs and rewrite the expression as a branchless select. `volatile` had forced the *load* of the operand, not the division that consumed it.
 
-**Result.** *(Fill in)*
+The instruction was written directly in inline assembly, leaving the compiler nothing to reason about.
 
-> **Lines of investigation:** The increment completes within a single timeslice, so preemption never lands inside the critical section. Widen the critical section (read → artificial delay → write) or raise the PIT frequency so a context switch reliably occurs mid-operation. This is a useful entry precisely because it required understanding *why* the race was absent rather than merely making it appear.
-
----
-
-### 3.12 Ring 3 transition causes a general protection fault *(Tier 3)*
-
-**Situation.** Attempting to enter user mode produces an immediate general protection fault, or the system triple-faults.
-
-**Task.** *(Fill in)*
-
-**Action.** *(Fill in)*
-
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** Ring 3 requires user-mode code and data descriptors in the GDT with DPL 3; the segment selectors must have RPL 3 set (the low two bits); a TSS must be installed with `esp0`/`ss0` pointing at a valid kernel stack, or the CPU has nowhere to switch to when an interrupt arrives from ring 3; the `iret` frame used to enter user mode must push `SS`, `ESP`, `EFLAGS`, `CS`, `EIP` in that order.
+**Result.** All three synchronous fault demos now raise genuine exceptions and are contained: the faulting task is killed and the shell survives. The general lesson is sharper than the specific fix — **you cannot reliably provoke a CPU exception from C**, because every way of doing so is undefined behaviour, and undefined behaviour is exactly what an optimiser is licensed to assume away. The same reasoning was applied pre-emptively to the null-pointer demo added later.
 
 ---
 
-### 3.13 Enabling paging triple-faults the machine *(Tier 3)*
+### 3.9 Ring 3 faulted on its first instruction: permissions are an AND across levels
 
-**Situation.** The instruction that sets `CR0.PG` executes and the machine immediately resets, with no fault reported.
+**Situation.** The transition into user mode succeeded — the saved `CS` read `0x1B`, confirming ring 3 — but the very first instruction fetch raised a page fault with error code 5: present, read, user mode. A protection violation rather than a missing page.
 
-**Task.** *(Fill in)*
+**Task.** The paging code set the `PAGE_USER` flag on every page-table entry covering the first 4 MB, where both the user code and its stack reside.
 
-**Action.** *(Fill in)*
+**Action.** The error code was the clue: *present* meant the mapping existed, so the address was fine and the permission was not. The CPU computes the effective permission as the logical AND of every level of the page-table walk, and the page *directory* entry pointing at that table had only present and write bits. A user-accessible page reached through a kernel-only directory entry is still kernel-only. `PAGE_USER` was added to the directory entry.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** The kernel is not identity-mapped, so the instruction immediately following the enable resolves to an unmapped linear address and faults, and the page-fault handler itself is unmapped, producing a triple fault. Also: `CR3` not set before enabling; `CR4.PSE` not set while using 4 MB page-directory entries; the VGA buffer at `0xB8000` left unmapped, removing all output; page-directory entries missing the present or write bits.
+**Result.** Ring 3 code executes. It is worth noting explicitly that this fix makes the entire first 4 MB user-accessible, which is why memory isolation is listed as a known limitation in §1.3 rather than claimed as working — instruction privilege is enforced, memory separation is not.
 
 ---
 
-### 3.14 Real hardware behaves differently from QEMU *(Tier 3)*
+### 3.10 Every system call reported as an unknown exception
 
-**Situation.** The kernel runs correctly under QEMU but fails, hangs or displays nothing when booted from USB on the physical machine.
+**Situation.** With ring 3 running, `int 0x80` reached the kernel but was reported as `CPU EXCEPTION 128: unknown`, and the calling task was killed as though it had faulted.
 
-**Task.** *(Fill in)*
+**Task.** The exception dispatcher looked up a registered handler before falling through to its diagnostic path.
 
-**Action.** *(Fill in)*
+**Action.** The lookup was written as `if (n < 32 && handlers[n])`, from when the only registered handlers were CPU exceptions. The syscall vector is 128, so the guard excluded it and the correctly-registered dispatcher was never consulted. Removing the bound fixed it.
 
-**Result.** *(Fill in)*
-
-> **Lines of investigation:** QEMU is more permissive than real hardware about descriptor and timing details; the real machine may boot via UEFI rather than legacy BIOS (requiring CSM to be enabled, or a UEFI-capable GRUB image); PS/2 may be emulated over USB and behave differently; real memory maps differ from QEMU's. Note in the Result that there is no debugger available here — the only diagnostic is what the kernel manages to print before failing, which is itself a finding worth stating.
+**Result.** System calls dispatch correctly. The bug is trivial; what makes it worth recording is that it was introduced by an assumption that was true when written and quietly became false — the guard encoded "handlers are only ever exceptions", which no longer held once a syscall gate existed.
 
 ---
 
-### 3.15 Toolchain and workflow learning curve
+### 3.11 The monitor scrolled instead of redrawing
 
-**Situation.** The team began this project without command-line experience: no terminal use, no compiling from a shell, no Git CLI, and no exposure to a debugger. Bare-metal development requires all four and provides none of the feedback an IDE gives.
+**Situation.** The live `top` display was intended to refresh in place. On screen it printed `[H` literally and scrolled, stacking successive frames down the display.
+
+**Task.** The monitor emitted the ANSI escape `\033[H` through `kprintf` to home the cursor between frames.
+
+**Action.** ANSI escapes are a terminal convention. The serial side is read by a terminal and honours them; the VGA side is a memory-mapped grid of character cells with no notion of escape sequences, so it faithfully rendered the bytes. We added a `console_home()` that moves the VGA hardware cursor directly and emits the escape only to the serial channel.
+
+**Result.** The display refreshes in place on both channels. The underlying mistake was treating two genuinely different devices as one because they share an interface.
+
+---
+
+### 3.12 A demo that overstated its own evidence
+
+**Situation.** The `race` command printed "totals differ from each other and from the expected value" whenever any run was incorrect — including runs where all three totals were identical, which a screenshot captured plainly.
+
+**Task.** The summary branched on a single flag recording whether every run had returned the expected total.
+
+**Action.** The message was making a claim the code had not checked. We added a second flag tracking whether the results actually differed from one another, and split the summary into three honest cases: no updates lost, updates lost with varying totals, and updates lost with identical totals.
+
+**Result.** The command now reports what happened rather than what usually happens. This is a small fix, but the failure mode is worth naming: the output was *arguing for the correctness of the system using evidence that was not on screen*. That is precisely the kind of claim a reader should distrust, and the reason the verification approach in §4.3 avoids relying on narration.
+
+---
+
+### 3.13 Toolchain and workflow
+
+**Situation.** The project began with no command-line experience on the team: no terminal use, no compiling from a shell, no Git CLI, and no debugger. Bare-metal development requires all of these and provides none of the feedback an IDE gives.
 
 **Task.** *(Fill in: how were you working before — GitHub Desktop, IDE run buttons, no build system?)*
 
-**Action.** *(Fill in: WSL2 setup, learning `make`, `grub-mkrescue` for ISO generation, attaching GDB to QEMU's debug socket, moving to Git on the command line.)*
+**Action.** The build environment was moved into a Docker image containing the whole toolchain — cross-compiler, assembler, QEMU, GRUB, ISO tools and debugger — so that nothing had to be installed on the host and every machine gets an identical setup. *(Fill in what you personally did: running the build, reading errors, using git.)*
 
-**Result.** *(Fill in)*
-
-> This is a legitimate entry, not an admission of weakness. The gap was identified at the outset and day 1 of the schedule was reserved for it. Note in the Result which tool made the largest difference — for most bare-metal projects it is either the debugger or serial logging, because both convert silent failures into inspectable evidence.
+**Result.** *(Fill in.)* Worth noting: the single most valuable piece of infrastructure turned out to be serial logging to a file, because it is the only thing that survives a triple fault and reboot. It was set up on day one rather than after it was first needed.
 
 ---
 
-### 3.16 *(Add unanticipated challenges here)*
+### 3.14 *(Add anything else you hit)*
 
 **Situation.**
 **Task.**
 **Action.**
 **Result.**
 
-> Problems not on this list are often the most valuable entries — they show genuine diagnosis rather than working through a known checklist.
-
 ---
 
 ## 4. Results
 
-*(Fill in on completion.)*
-
 ### 4.1 What works
 
-*(Fill in — map against the "must have" checklist in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6.)*
+All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus both Tier 3 stretch goals:
 
-### 4.2 What does not work / known limitations
+- Boots under GRUB in QEMU; multiboot magic verified against the value the bootloader leaves in `eax`
+- VGA text output with colour and scrolling; serial debug channel loggable to a file
+- Own GDT with ring 0 and ring 3 descriptors and a TSS
+- 256-entry IDT; CPU exceptions produce a full diagnostic including register dump
+- PIC remapped to vectors 32–47; PIT at 100 Hz; interrupt-driven PS/2 keyboard
+- Paging enabled, 123 MB identity mapped, page 0 unmapped
+- Heap allocator with splitting, coalescing, exhaustion handling and corruption detection
+- Preemptive round-robin scheduling with stack guard words and reaping of finished tasks
+- Spinlock, mutex and semaphore; race condition demonstrated failing then fixed
+- Ring 3 tasks with `int 0x80` system calls
+- Faults contained: the offending task dies, the kernel and shell continue
+- Shell with 15 commands, live kernel monitor, `demo` walkthrough, `selftest`
+- `make run`, `make test` and `make debug` from a clean clone
 
-*(Fill in. Be direct. Limitations stated honestly read as engineering maturity; omissions the marker discovers read as carelessness.)*
+### 4.2 What does not work
+
+The limitations in §1.3 are the honest list: memory is not isolated between rings, syscall pointers are unvalidated, the scheduler has no priorities, and the race-variance check is statistical. None of these were discovered late; all are consequences of scope decisions.
+
+One further note: booting on real hardware (Tier 3 item 21) was **not attempted**. The kernel is built as a GRUB rescue ISO and should boot from a USB stick on a BIOS or CSM-enabled machine, but this has only ever run under QEMU. Claiming it works on real hardware without having tried it would be exactly the kind of unverified assertion this report tries to avoid.
 
 ### 4.3 Verification
 
-Printed output alone proves nothing — a single loop printing `[A] 000 [B] 111` is indistinguishable from real preemption. Every feature is therefore verified by one of three methods:
+Printed output proves nothing on its own — a single loop emitting `A B A B` is indistinguishable from real preemption. Every feature is therefore verified by one of three methods:
 
-1. **Ablation** — disable the mechanism and show the system fails exactly as theory predicts.
-2. **Hardware-authored values** — display registers the CPU wrote, which we never assigned.
-3. **Nondeterminism** — genuine concurrency produces varying results across runs; a fake is repeatable.
+1. **Ablation** — disable the mechanism and show the system fails as theory predicts
+2. **Hardware-authored values** — display registers the CPU wrote, which we never assigned
+3. **Nondeterminism** — genuine concurrency gives different results across runs; a fake is repeatable
 
-*(Fill in the Evidence column with actual observed output.)*
-
-| Feature | Method | What establishes it | Evidence |
+| Feature | Method | What establishes it | Observed |
 |---|---|---|---|
-| Preemption | Ablation | `preempt off` → first task monopolises the CPU; `preempt on` → interleaving resumes | |
-| Preemption | Side effect | A task that produces **no output**, only increments a counter, shows a non-zero count afterwards — it can only have advanced by receiving real CPU time | |
-| Preemption | Hardware value | PIT tick count at each context switch shows evenly spaced switches | |
-| Scheduler fairness | Measurement | Per-task tick counts are approximately equal | |
-| Heap | Behavioural | Allocations do not overlap; freed blocks are reused; adjacent free blocks coalesce; exhaustion returns NULL | |
-| Heap | Integrity | Write a pattern to block A, allocate and write block B, verify A is unchanged | |
-| Mutex | Nondeterminism | 10 unlocked runs produce 10 different wrong totals; 10 locked runs produce the correct total every time | |
-| Page fault | Hardware value | `CR2` contains the address typed at the shell — written by the CPU, not by us | |
-| Fault recovery | Behavioural | Shell accepts a further command after a task is killed | |
-| Ring 3 | Hardware value | `CS` low bits report ring 3; privileged instruction raises a GPF | |
-| All | External observer | GDB attached to QEMU: breakpoint in the timer ISR, `info registers` shows the saved `EIP` inside a task's loop | |
+| Preemption | Ablation | `preempt off` stops involuntary switches entirely; `preempt on` resumes them | PASS, both directions |
+| Preemption | Side effect | A task producing **no output**, only incrementing a counter, shows a non-zero count afterwards | counter ≈ 1.2 × 10⁸ |
+| Preemption | Interleaving | Three tasks in tight loops with no yields produce mixed output | `AAAABBBBCCCCAAAAABBBBB…` |
+| Scheduler fairness | Measurement | Per-task tick counts comparable; no task starved | 10, 10, 11, 14 ticks |
+| Heap | Behavioural | Non-overlap, cross-block integrity, address reuse after free, coalescing, NULL on exhaustion | 7 checks PASS |
+| Heap | Integrity | Magic headers detect corruption; `heap_check()` walks the block list | PASS |
+| Mutex | Nondeterminism | 5 unlocked runs give scattered wrong totals; locked runs exact | `93 78 84 63 89` vs `100 100` |
+| Timer | Independence | Tick counter advances while the CPU sits in `hlt` | PASS |
+| Page fault | Hardware value | `CR2` contains the address typed at the shell | typed `0xdeadb000`, CPU reported `deadb000` |
+| Null dereference | Hardware value | `CR2` reads `0x00000000`, error code decodes as not-present, read | PASS |
+| GPF | Hardware value | Error code is the offending selector | typed selector `0x80`, CPU reported `0x80` |
+| Fault containment | Behavioural | Shell accepts further commands after a task is killed | PASS |
+| Ring 3 | Hardware value | Saved `CS` reads `0x1B` — low two bits are the privilege level | PASS |
+| Ring 3 | Ablation | Direct port I/O raises a GPF; the same task via syscall succeeds | PASS, both |
 
-*(Paste the full `selftest` output here.)*
+**Automated:** `selftest` runs 21 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
+
+**Screenshots** captured headlessly via QEMU's `screendump` are in [`docs/images/`](docs/images/).
 
 ---
 
 ## 5. Reflection
 
-*(Fill in.)*
-
 ### 5.1 What we would do differently
 
-*(Fill in. Candidates: setting up serial logging before the first triple fault rather than after; adopting GDB earlier; verifying binary layout with `readelf` as a routine step; committing more frequently; resolving team capacity on day 1.)*
+**Set up binary inspection before writing code, not after the first mystery.** `objdump -h` and `readelf -S` resolved §3.1 in minutes after hours of reading correct source. On bare metal the layout of the output file is part of the program's correctness.
+
+**Distrust the optimiser earlier.** §3.8 cost real time and the fix was one line. Anything that depends on undefined behaviour — deliberate faults especially — belongs in assembly from the start.
+
+**Add header dependency tracking on the first day.** §3.7 produced a binary that contradicted its own source, which is a uniquely disorienting failure and is prevented by two compiler flags.
+
+**Treat demonstrations as code that can be wrong.** Three separate defects (§3.5, §3.6, §3.12) were in the demonstration rather than the kernel: one proved nothing, one proved too much, one claimed evidence it had not gathered. Verification code deserves the same scepticism as the code it verifies.
 
 ### 5.2 What we learned
 
-*(Fill in. Aim for concrete mechanism over generality — "an interrupt is the only mechanism by which the kernel regains control of the CPU, so without a timer a runaway task owns the machine permanently" is worth more than "we learned a lot about operating systems".)*
+**An interrupt is the only mechanism by which a kernel regains control of the CPU.** This stops being abstract the moment you write `preempt off` and watch one task hold the machine forever. Without a timer, a runaway task owns it permanently — no amount of kernel code can intervene, because none of it is running.
+
+**A task is a stack.** Context switching looks mysterious until you write it: save the registers the calling convention requires you to preserve, swap the stack pointer, pop the other set back, and `ret`. The `ret` returns somewhere entirely different from where you called from, and that is the whole trick. Creating a task means building a stack that *looks* as if it had already been switched away from.
+
+**Privilege is enforced by hardware, not by the kernel.** Ring 3 code attempting port I/O is not stopped by a check we wrote — the CPU refuses and raises a fault. The kernel's role is to set up the descriptors, provide one controlled door, and decide what to do with the corpse.
+
+**"It compiled" means very little without a runtime underneath.** Four of the defects above (§3.1, §3.2, §3.7, §3.8) were introduced by the toolchain doing exactly what it was asked, in a context where nothing existed to catch the consequences.
 
 ---
 
@@ -375,9 +385,7 @@ Printed output alone proves nothing — a single loop printing `[A] 000 [B] 111`
 
 | Resource | Use |
 |---|---|
-| [The Little Book About OS Development](https://littleosbook.github.io) | Primary guide — GRUB multiboot, i386, VGA text, IDT, PIT, keyboard, paging, ring 3 |
-| [OSDev Wiki](https://wiki.osdev.org) | Reference for PIC, PIT, PS/2, GDT, TSS, paging |
-| Intel Software Developer's Manual, Vol. 3 | Authoritative on protected mode, descriptors, exceptions |
-| Multiboot Specification 0.6.96 | Header format and boot handover |
-
-*(Add any further sources actually used. Cite tutorials followed closely — following a tutorial is legitimate; not citing it is not.)*
+| [The Little Book About OS Development](https://littleosbook.github.io) | GRUB multiboot, i386 setup, VGA text, IDT, PIT, keyboard, paging, ring 3 |
+| [OSDev Wiki](https://wiki.osdev.org) | Reference for PIC remapping, PIT programming, PS/2 protocol, GDT/TSS layout, paging structures |
+| Intel Software Developer's Manual, Vol. 3 | Authoritative on protected mode, descriptor formats, exception behaviour, control registers |
+| Multiboot Specification 0.6.96 | Header format, the 8 KB search window, boot handover state |
