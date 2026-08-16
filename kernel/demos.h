@@ -48,4 +48,15 @@ uint32_t quiet_stop_and_read(void);
  * and no dereference can fault at all. */
 void fault_spawn(const char *kind, uint32_t addr);
 
+/* Run a task in ring 3.
+ *
+ * use_syscall false: the task tries to write to a hardware port directly.
+ *                    The CPU raises a general protection fault and the task
+ *                    is killed -- unprivileged code cannot touch hardware.
+ * use_syscall true:  the same task asks the kernel via int 0x80 instead,
+ *                    and succeeds.
+ *
+ * Same code, same privilege level, different outcome, decided by hardware. */
+void user_mode_demo(bool use_syscall);
+
 #endif /* DEMOS_H */

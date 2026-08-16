@@ -16,6 +16,7 @@
 #include "heap.h"
 #include "paging.h"
 #include "task.h"
+#include "syscall.h"
 #include "shell.h"
 #include "selftest.h"
 
@@ -73,6 +74,7 @@ void kmain(uint32_t magic, uint32_t *mb_info)
     heap_init(heap_start, HEAP_SIZE);
 
     task_init();
+    syscall_init();
     pit_on_tick(task_tick);     /* the timer now drives the scheduler */
 
     sti();

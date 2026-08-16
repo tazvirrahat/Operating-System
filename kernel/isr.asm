@@ -101,6 +101,20 @@ IRQ 14, 46
 IRQ 15, 47
 
 ; ---------------------------------------------------------------------------
+; System call gate, vector 0x80.
+;
+; The only vector whose IDT entry has DPL 3, making it the single door ring 3
+; code is permitted to open into the kernel. Everything else is unreachable
+; from user mode by construction.
+; ---------------------------------------------------------------------------
+global isr128
+isr128:
+    cli
+    push dword 0                ; no error code
+    push dword 128
+    jmp isr_common
+
+; ---------------------------------------------------------------------------
 ; Common paths
 ;
 ; Stack on entry (low to high): int_no, err_code, eip, cs, eflags [, useresp, ss]

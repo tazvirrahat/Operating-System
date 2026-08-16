@@ -52,10 +52,34 @@ void paging_init(uint32_t memory_bytes)
             continue;
         }
 
-        first_table[i] = (i * PAGE_SIZE_BYTES) | PAGE_PRESENT | PAGE_WRITE;
+        /* PAGE_USER makes this page reachable from ring 3.
+         *
+         * Setting it across the whole first 4 MB is a deliberate simplification
+         * with a real cost: user code and kernel code share these pages, so
+         * memory is NOT isolated between them — a ring 3 task could read kernel
+         * data if it tried. Separating them properly would mean giving user
+         * code its own linker section on its own pages.
+         *
+         * What is genuinely enforced here is instruction privilege: ring 3
+         * cannot execute port I/O, cli/sti, or control register access, and the
+         * CPU kills it for trying. That is what the user-mode demo shows, and
+         * the limitation above is stated rather than glossed over. */
+        first_table[i] = (i * PAGE_SIZE_BYTES)
+                       | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
     }
 
-    page_directory[0] = ((uint32_t)first_table) | PAGE_PRESENT | PAGE_WRITE;
+    /* PAGE_USER is required on the directory entry as well as on the entries
+     * in the table it points to.
+     *
+     * The CPU computes the effective permission as the AND of every level of
+     * the walk, so a user-accessible page reached through a kernel-only
+     * directory entry is still kernel-only. Setting the flag on the leaves and
+     * forgetting the branch produces a page fault on the very first ring 3
+     * instruction fetch, with error code 5: present, read, user mode — a
+     * protection violation rather than a missing page, which is the clue that
+     * the mapping exists but the permissions do not allow it. */
+    page_directory[0] = ((uint32_t)first_table)
+                      | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
     mapped_bytes = LARGE_PAGE_BYTES - PAGE_SIZE_BYTES;
 
     /* --- everything above 4 MB, in 4 MB pages --- */

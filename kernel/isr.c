@@ -60,7 +60,9 @@ void isr_handler(registers_t *regs)
 {
     uint32_t n = regs->int_no;
 
-    if (n < 32 && handlers[n]) {
+    /* Not gated on n < 32: this path also carries the syscall vector (0x80),
+     * which is dispatched through a registered handler like anything else. */
+    if (handlers[n]) {
         handlers[n](regs);
         return;
     }

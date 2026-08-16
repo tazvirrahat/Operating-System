@@ -213,6 +213,20 @@ static void cmd_fault(int argc, char **argv)
     fault_spawn(argv[1], addr);
 }
 
+static void cmd_user(int argc, char **argv)
+{
+    bool use_syscall = (argc > 1 && strcmp(argv[1], "--syscall") == 0);
+
+    if (!use_syscall) {
+        kprintf("\nrunning a task in ring 3 that touches hardware directly.\n");
+        kprintf("the CPU should stop it. (try 'user --syscall' for the legal route)\n");
+    } else {
+        kprintf("\nsame task, same privilege level, asking the kernel instead.\n");
+    }
+
+    user_mode_demo(use_syscall);
+}
+
 static void cmd_top(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -288,6 +302,7 @@ static const command_t commands[] = {
     { "preempt",  "preempt on|off",   "toggle timer preemption (ablation test)",   cmd_preempt  },
     { "race",     "race on|off [n]",  "shared counter with and without a mutex",   cmd_race     },
     { "fault",    "fault <kind>",     "raise a real CPU exception in a task",      cmd_fault    },
+    { "user",     "user [--syscall]", "run a task in ring 3 (privilege demo)",     cmd_user     },
     { "tasks",    "tasks",            "list tasks and their CPU time",             cmd_tasks    },
     { "top",      "top",              "live kernel monitor",                       cmd_top      },
     { "meminfo",  "meminfo",          "heap usage and block list state",           cmd_meminfo  },

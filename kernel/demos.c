@@ -4,6 +4,8 @@
 #include "console.h"
 #include "pit.h"
 #include "paging.h"
+#include "syscall.h"
+#include "heap.h"
 
 /* ---- race demonstration ------------------------------------------------- */
 
@@ -263,6 +265,104 @@ static void fault_page(void)
     kprintf("  [task] reading unmapped address %08x...\n", fault_target);
     touch_address(fault_target);
     kprintf("  [task] still alive - the fault did not fire!\n");
+}
+
+/* ---- ring 3 -------------------------------------------------------------- */
+
+/* Syscall wrappers. These are the only kernel services ring 3 code can reach:
+ * everything goes through int 0x80, the one IDT gate with DPL 3. */
+
+static inline uint32_t sys_call0(uint32_t num)
+{
+    uint32_t ret;
+    __asm__ volatile ("int $0x80" : "=a"(ret) : "a"(num) : "memory");
+    return ret;
+}
+
+static inline uint32_t sys_call1(uint32_t num, uint32_t arg)
+{
+    uint32_t ret;
+    __asm__ volatile ("int $0x80" : "=a"(ret) : "a"(num), "b"(arg) : "memory");
+    return ret;
+}
+
+/* --- this code runs in ring 3 --- */
+
+static void user_program_direct_hardware(void)
+{
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] running unprivileged\n");
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] writing directly to VGA port 0x3D4...\n");
+
+    /* Port I/O is gated by IOPL, which is 0 in the EFLAGS we entered ring 3
+     * with. The CPU raises a general protection fault here. We never get to
+     * the next line. */
+    __asm__ volatile ("movw $0x3D4, %dx; movb $0x0F, %al; outb %al, %dx");
+
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] hardware write succeeded - NOT expected!\n");
+    sys_call0(SYS_EXIT);
+}
+
+static void user_program_via_syscall(void)
+{
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] running unprivileged\n");
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] asking the kernel instead of touching hardware...\n");
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] hello from ring 3, printed by the kernel on my behalf\n");
+    sys_call1(SYS_WRITE, (uint32_t)"  [ring3] exiting cleanly\n");
+
+    sys_call0(SYS_EXIT);
+
+    /* Unreachable: SYS_EXIT never returns. */
+    for (;;)
+        ;
+}
+
+/* --- back in ring 0 --- */
+
+static bool user_wants_syscall;
+
+static void user_task_entry(void)
+{
+    uint8_t *user_stack = kmalloc(4096);
+    if (!user_stack) {
+        kprintf("  could not allocate a user stack\n");
+        return;
+    }
+
+    /* Report the privilege level from both sides of the boundary. The value
+     * comes from CS, which the CPU maintains — we never assign it. */
+    uint32_t cs_before;
+    __asm__ volatile ("mov %%cs, %0" : "=r"(cs_before));
+    kprintf("  [ring0] CS = %04x (ring %u) before the transition\n",
+            cs_before & 0xFFFF, cs_before & 3);
+
+    void (*program)(void) = user_wants_syscall
+                          ? user_program_via_syscall
+                          : user_program_direct_hardware;
+
+    enter_user_mode(program, (uint32_t)user_stack + 4096);
+}
+
+void user_mode_demo(bool use_syscall)
+{
+    user_wants_syscall = use_syscall;
+
+    kprintf("\n");
+    task_t *t = task_create("usermode", user_task_entry);
+    if (!t) {
+        kprintf("could not create the task\n");
+        return;
+    }
+
+    uint32_t give_up_at = pit_ticks() + 300;
+    while (pit_ticks() < give_up_at) {
+        task_yield();
+        if (t->state == TASK_DEAD)
+            break;
+    }
+
+    task_reap();
+    kprintf("\nshell still running, %d task%s alive.\n\n",
+            task_count(), task_count() == 1 ? "" : "s");
 }
 
 void fault_spawn(const char *kind, uint32_t addr)
