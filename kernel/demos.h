@@ -34,6 +34,13 @@ void spawn_printers(int n);
 void quiet_start(void);
 uint32_t quiet_stop_and_read(void);
 
+/* Spawn `n` long-running silent workers and return immediately, so the shell
+ * stays usable while they run. Mainly so the monitor has something to show. */
+void spawn_background(int n);
+
+/* Ask the background workers to finish. */
+void stop_background(void);
+
 /* Spawn a task that deliberately raises a real CPU exception. The task is
  * killed by the fault handler; the kernel and shell keep running, which is
  * the point of the demonstration.

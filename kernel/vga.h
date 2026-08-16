@@ -19,6 +19,10 @@ enum vga_color {
 void vga_init(void);
 void vga_putc(char c);
 void vga_clear(void);
+
+/* Move the cursor back to the top-left without erasing anything, so the next
+ * redraw overwrites the previous one in place. */
+void vga_home(void);
 void vga_set_color(enum vga_color fg, enum vga_color bg);
 void vga_move_cursor(uint8_t x, uint8_t y);
 

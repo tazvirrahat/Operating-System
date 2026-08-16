@@ -31,6 +31,19 @@ void kputs(const char *s)
         kputc(*s++);
 }
 
+void console_home(void)
+{
+    /* The VGA driver deliberately does not interpret ANSI escapes — it is a
+     * memory-mapped grid, not a terminal — so writing "\033[H" to it would
+     * print the characters literally and scroll the display instead of
+     * redrawing over it. Each channel gets what it actually understands. */
+    vga_home();
+
+    serial_putc('\033');
+    serial_putc('[');
+    serial_putc('H');
+}
+
 /* Render an unsigned value into buf (which must hold at least 33 bytes) and
  * return it. Kept separate from output so padding can be applied afterwards. */
 static char *format_uint(char *buf, uint32_t value, uint32_t base, bool upper)

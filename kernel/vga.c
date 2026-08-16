@@ -93,6 +93,13 @@ void vga_putc(char c)
     vga_move_cursor(cursor_x, cursor_y);
 }
 
+void vga_home(void)
+{
+    cursor_x = 0;
+    cursor_y = 0;
+    vga_move_cursor(0, 0);
+}
+
 void vga_init(void)
 {
     vga_set_color(VGA_LGREY, VGA_BLACK);

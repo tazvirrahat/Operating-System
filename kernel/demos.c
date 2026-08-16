@@ -200,6 +200,55 @@ uint32_t quiet_stop_and_read(void)
     return quiet_counter;
 }
 
+/* ---- long-running background workers ------------------------------------ */
+
+static volatile int background_stop;
+static volatile uint32_t background_counters[4];
+
+static void background_body(int slot)
+{
+    while (!background_stop)
+        background_counters[slot]++;
+}
+
+static void background_0(void) { background_body(0); }
+static void background_1(void) { background_body(1); }
+static void background_2(void) { background_body(2); }
+static void background_3(void) { background_body(3); }
+
+void spawn_background(int n)
+{
+    static task_entry_t entries[4] = {
+        background_0, background_1, background_2, background_3
+    };
+    static const char *names[4] = { "worker_a", "worker_b", "worker_c", "worker_d" };
+
+    if (n < 1) n = 1;
+    if (n > 4) n = 4;
+
+    background_stop = 0;
+
+    for (int i = 0; i < n; i++) {
+        background_counters[i] = 0;
+        task_create(names[i], entries[i]);
+    }
+
+    /* Deliberately no wait here: the point is that the shell keeps responding
+     * while these run, which only works because the shell is preempted too. */
+}
+
+void stop_background(void)
+{
+    background_stop = 1;
+
+    /* Give them a moment to notice and exit before reaping. */
+    uint32_t until = pit_ticks() + 20;
+    while (pit_ticks() < until)
+        task_yield();
+
+    task_reap();
+}
+
 /* ---- deliberate faults -------------------------------------------------- */
 
 static void fault_div0(void)

@@ -18,6 +18,12 @@ void kprintf(const char *fmt, ...);
 void kputc(char c);
 void kputs(const char *s);
 
+/* Return the cursor to the top-left on both channels, so a repeated redraw
+ * overwrites in place rather than scrolling. The VGA side moves the hardware
+ * cursor directly; the serial side emits the equivalent ANSI escape, since a
+ * terminal is the only thing on that end that understands one. */
+void console_home(void);
+
 /* Print a message, then halt the CPU permanently. Never returns. */
 void panic(const char *fmt, ...) __attribute__((noreturn));
 

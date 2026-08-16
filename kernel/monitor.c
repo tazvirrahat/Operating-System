@@ -83,7 +83,7 @@ void monitor_run(void)
 
         /* Home the cursor rather than clearing, so the display updates in
          * place instead of flickering through a blank screen. */
-        kprintf("\033[H");
+        console_home();
         monitor_draw();
 
         /* Redraw roughly 4 times a second. Yielding rather than spinning keeps

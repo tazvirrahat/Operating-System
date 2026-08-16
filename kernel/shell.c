@@ -123,6 +123,27 @@ static void cmd_spawn(int argc, char **argv)
     kprintf("\n\ndone. %u context switches so far.\n\n", task_switch_count());
 }
 
+static void cmd_bg(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "stop") == 0) {
+        stop_background();
+        kprintf("background workers stopped, %d task%s left\n",
+                task_count(), task_count() == 1 ? "" : "s");
+        return;
+    }
+
+    int n = 3;
+    if (argc > 1) {
+        const char *end;
+        n = (int)strtoul(argv[1], &end);
+    }
+
+    spawn_background(n);
+    kprintf("started %d background worker%s - the shell is still responsive.\n",
+            n, n == 1 ? "" : "s");
+    kprintf("try 'top' to watch them, then 'bg stop'.\n");
+}
+
 static void cmd_preempt(int argc, char **argv)
 {
     if (argc < 2) {
@@ -169,6 +190,8 @@ static void cmd_race(int argc, char **argv)
     kprintf("expected total: %u\n\n", (uint32_t)RACE_EXPECTED);
 
     bool all_correct = true;
+    bool any_varied  = false;
+    uint32_t first   = 0;
 
     for (int i = 0; i < repeats; i++) {
         uint32_t result = race_run(use_lock);
@@ -176,21 +199,41 @@ static void cmd_race(int argc, char **argv)
         bool ok = (result == RACE_EXPECTED);
         all_correct &= ok;
 
+        if (i == 0)
+            first = result;
+        else if (result != first)
+            any_varied = true;
+
         vga_set_color(ok ? VGA_LGREEN : VGA_LRED, VGA_BLACK);
         kprintf("  run %d: %-8u %s\n", i + 1, result, ok ? "" : "<- lost updates");
         vga_set_color(VGA_LGREY, VGA_BLACK);
     }
 
     kprintf("\n");
-    if (use_lock)
+
+    if (use_lock) {
         kprintf("%s\n\n", all_correct
                 ? "every run exact - the mutex closed the window."
                 : "UNEXPECTED: locking should have made these exact.");
-    else
-        kprintf("%s\n\n", all_correct
-                ? "no updates lost this time - try more repeats, the race is timing dependent."
-                : "totals differ from each other and from the expected value.\n"
-                  "that variation is the proof: a hardcoded fake would be identical every run.");
+        return;
+    }
+
+    /* Report what actually happened rather than what usually happens. How many
+     * updates are lost depends on where preemption lands, so identical totals
+     * across a short sample are perfectly possible and should not be described
+     * as variation. */
+    if (all_correct) {
+        kprintf("no updates lost this time. the race is timing dependent -\n");
+        kprintf("try more repeats, e.g. 'race off 8'.\n\n");
+    } else if (any_varied) {
+        kprintf("totals differ from each other and from the expected value.\n");
+        kprintf("that variation is the proof: a hardcoded fake would be\n");
+        kprintf("identical every run.\n\n");
+    } else {
+        kprintf("updates were lost on every run. the totals happen to match\n");
+        kprintf("each other here; run it again or use more repeats to see them\n");
+        kprintf("diverge, since the count depends on where preemption lands.\n\n");
+    }
 }
 
 static void cmd_fault(int argc, char **argv)
@@ -299,6 +342,7 @@ static const command_t commands[] = {
     { "demo",     "demo",             "scripted walkthrough of every feature",     cmd_demo     },
     { "selftest", "selftest",         "run all verification checks",               cmd_selftest },
     { "spawn",    "spawn [1-4]",      "run N tasks that never yield",              cmd_spawn    },
+    { "bg",       "bg [1-4] | stop",  "background workers, shell stays usable",    cmd_bg       },
     { "preempt",  "preempt on|off",   "toggle timer preemption (ablation test)",   cmd_preempt  },
     { "race",     "race on|off [n]",  "shared counter with and without a mutex",   cmd_race     },
     { "fault",    "fault <kind>",     "raise a real CPU exception in a task",      cmd_fault    },
