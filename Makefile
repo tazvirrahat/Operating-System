@@ -35,10 +35,11 @@ LDFLAGS := -m32 -ffreestanding -nostdlib -no-pie -Wl,--build-id=none \
 CSRC := $(wildcard kernel/*.c)
 COBJ := $(patsubst kernel/%.c,$(BUILD)/%.o,$(CSRC))
 
-# boot.o is listed first so the multiboot header lands at the very start of
-# the image. The linker script also enforces this, but belt and braces.
-AOBJ := $(BUILD)/boot.o
-AOBJ += $(patsubst kernel/%.asm,$(BUILD)/%.o,$(filter-out kernel/boot.asm,$(wildcard kernel/*.asm)))
+# Assembly objects get a .asm.o suffix. Without it kernel/isr.c and
+# kernel/isr.asm would both build to build/isr.o and silently overwrite each
+# other, producing "undefined reference" errors for symbols that plainly exist.
+AOBJ := $(BUILD)/boot.asm.o
+AOBJ += $(patsubst kernel/%.asm,$(BUILD)/%.asm.o,$(filter-out kernel/boot.asm,$(wildcard kernel/*.asm)))
 
 OBJ := $(AOBJ) $(COBJ)
 
@@ -52,7 +53,7 @@ all: $(ISO)
 $(BUILD):
 	@mkdir -p $(BUILD)
 
-$(BUILD)/%.o: kernel/%.asm | $(BUILD)
+$(BUILD)/%.asm.o: kernel/%.asm | $(BUILD)
 	$(AS) $(ASFLAGS) $< -o $@
 
 $(BUILD)/%.o: kernel/%.c | $(BUILD)
