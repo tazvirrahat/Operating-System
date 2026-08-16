@@ -73,12 +73,23 @@ static void racer(void)
          * guaranteed to occur here regardless of machine speed. */
         uint32_t value = shared_counter;
 
-        /* Hold the update half-finished for a randomised span of roughly zero
-         * to two timer ticks. Sometimes the write lands before the next
-         * preemption and the increment survives; sometimes it does not and the
-         * update is lost. That intermediate probability is what makes the
-         * final total differ from run to run. */
-        uint32_t spin = rng_next() % (2 * spins_per_tick + 1);
+        /* Hold the update half-finished for a randomised span of zero to about
+         * one timeslice. Sometimes the write lands before the next preemption
+         * and the increment survives; sometimes it does not and the update is
+         * lost.
+         *
+         * The range matters. Spanning up to *two* timeslices means nearly every
+         * iteration is interrupted, every update is lost, and the total pins to
+         * exactly half — reproducible to the digit, which is precisely what a
+         * fabricated result would also look like. Keeping the window at roughly
+         * one timeslice puts the loss probability near half, so the total lands
+         * somewhere different on each run. */
+        /* Quarter of a tick's worth of work, not a whole one. The calibration
+         * measured how much spinning fits in a tick when running alone, but
+         * two racers share the CPU, so the same work takes roughly twice the
+         * wall time — and a window that reliably exceeds one timeslice puts
+         * the loss probability at ~100% again. */
+        uint32_t spin = rng_next() % (spins_per_tick / 4 + 1);
 
         for (volatile uint32_t d = 0; d < spin; d++)
             ;   /* not task_yield(): preemption must be what interrupts us */

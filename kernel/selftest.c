@@ -4,6 +4,7 @@
 #include "heap.h"
 #include "sync.h"
 #include "pit.h"
+#include "paging.h"
 #include "console.h"
 #include "vga.h"
 #include "string.h"
@@ -136,19 +137,31 @@ static void test_sync(void)
 
     /* Unlocked: the total must come out wrong. Just as important, it must come
      * out *differently* wrong across runs — a fixed wrong number would suggest
-     * a deterministic bug rather than a genuine race. */
-    uint32_t r1 = race_run(false);
-    uint32_t r2 = race_run(false);
-    uint32_t r3 = race_run(false);
+     * a deterministic bug rather than a genuine race.
+     *
+     * Variance is a statistical property, so this samples several runs rather
+     * than two. Even so it is the one check here that could in principle flake;
+     * the alternative is not checking authenticity at all. */
+    #define UNLOCKED_RUNS 5
 
-    kprintf("         unlocked runs: %u, %u, %u (expected %u)\n",
-            r1, r2, r3, (uint32_t)RACE_EXPECTED);
+    uint32_t runs[UNLOCKED_RUNS];
+    bool any_lost = false;
+    bool any_differ = false;
 
-    CHECK(r1 < RACE_EXPECTED || r2 < RACE_EXPECTED || r3 < RACE_EXPECTED,
-          "unsynchronised counter loses updates\n");
+    kprintf("         unlocked runs:");
+    for (int i = 0; i < UNLOCKED_RUNS; i++) {
+        runs[i] = race_run(false);
+        kprintf(" %u", runs[i]);
 
-    CHECK(!(r1 == r2 && r2 == r3),
-          "results vary between runs (genuine nondeterminism)\n");
+        if (runs[i] < RACE_EXPECTED)
+            any_lost = true;
+        if (i > 0 && runs[i] != runs[0])
+            any_differ = true;
+    }
+    kprintf("  (expected %u)\n", (uint32_t)RACE_EXPECTED);
+
+    CHECK(any_lost, "unsynchronised counter loses updates\n");
+    CHECK(any_differ, "results vary between runs (genuine nondeterminism)\n");
 
     uint32_t l1 = race_run(true);
     uint32_t l2 = race_run(true);
@@ -187,6 +200,33 @@ static void test_timer(void)
           pit_hz());
 }
 
+/* ---- memory protection and privilege ------------------------------------ */
+
+static void test_protection(void)
+{
+    kprintf("PROTECTION\n");
+
+    CHECK(paging_enabled(), "paging enabled (%u MB identity mapped)\n",
+          paging_mapped_bytes() / (1024 * 1024));
+
+    /* Spawn a ring 3 task that reaches the kernel only through int 0x80 and
+     * exits cleanly. If it completes, the whole path worked: the iret into
+     * user mode, the DPL 3 syscall gate, the kernel stack switch via the TSS,
+     * and the return to ring 3 afterwards. */
+    int before = task_count();
+
+    user_mode_demo(true);
+
+    CHECK(task_count() == before,
+          "ring 3 task ran via syscalls and exited cleanly\n");
+
+    /* And the same task without the syscall route is killed by the CPU. */
+    user_mode_demo(false);
+
+    CHECK(task_count() == before,
+          "ring 3 task killed for direct hardware access, kernel survived\n");
+}
+
 /* ---- entry point -------------------------------------------------------- */
 
 int selftest_run(void)
@@ -199,6 +239,7 @@ int selftest_run(void)
     test_heap();
     test_scheduler();
     test_sync();
+    test_protection();
 
     kprintf("\n");
     if (failed == 0)
