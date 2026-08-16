@@ -91,10 +91,19 @@ void irq_handler(registers_t *regs)
 {
     uint8_t irq = (uint8_t)(regs->int_no - IRQ_BASE);
 
+    /* Acknowledge BEFORE running the handler, not after.
+     *
+     * The timer handler drives the scheduler, and a context switch does not
+     * return: it swaps stacks and resumes a different task. If that task is
+     * brand new it has never been through this function, so an EOI placed
+     * after the handler call would simply never execute. The PIC would then
+     * consider IRQ 0 still in service and deliver no further timer ticks —
+     * the scheduler would run exactly once and the system would freeze.
+     *
+     * Acknowledging first is safe because interrupt gates clear IF on entry,
+     * so no nested interrupt can arrive while we are still in here. */
+    pic_eoi(irq);
+
     if (handlers[regs->int_no])
         handlers[regs->int_no](regs);
-
-    /* Always acknowledge, even with no handler installed. Skipping this
-     * silently stops all further interrupts on that line. */
-    pic_eoi(irq);
 }

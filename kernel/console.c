@@ -31,43 +31,84 @@ void kputs(const char *s)
         kputc(*s++);
 }
 
-static void print_uint(uint32_t value, uint32_t base, bool upper, int pad)
+/* Render an unsigned value into buf (which must hold at least 33 bytes) and
+ * return it. Kept separate from output so padding can be applied afterwards. */
+static char *format_uint(char *buf, uint32_t value, uint32_t base, bool upper)
 {
     static const char *lower_digits = "0123456789abcdef";
     static const char *upper_digits = "0123456789ABCDEF";
     const char *digits = upper ? upper_digits : lower_digits;
 
-    char buf[32];
-    int i = 0;
+    char tmp[32];
+    int  i = 0;
 
     if (value == 0)
-        buf[i++] = '0';
+        tmp[i++] = '0';
 
     while (value > 0) {
-        buf[i++] = digits[value % base];
+        tmp[i++] = digits[value % base];
         value /= base;
     }
 
-    while (i < pad)
-        buf[i++] = '0';
-
+    int j = 0;
     while (i-- > 0)
-        kputc(buf[i]);
+        buf[j++] = tmp[i];
+    buf[j] = '\0';
+
+    return buf;
 }
 
-static void print_int(int32_t value, int pad)
+static char *format_int(char *buf, int32_t value)
 {
     if (value < 0) {
-        kputc('-');
-        /* Negating INT32_MIN overflows, so cast before negating. */
-        print_uint((uint32_t)(-(int64_t)value), 10, false, pad);
-    } else {
-        print_uint((uint32_t)value, 10, false, pad);
+        buf[0] = '-';
+        /* Negating INT32_MIN overflows a signed 32-bit value, so widen first. */
+        format_uint(buf + 1, (uint32_t)(-(int64_t)value), 10, false);
+        return buf;
     }
+
+    return format_uint(buf, (uint32_t)value, 10, false);
 }
 
+/* Emit a rendered field, applying width, alignment and fill.
+ * Zero fill is ignored for left-aligned fields, matching printf. */
+static void emit_field(const char *s, int width, bool left_align, bool zero_fill)
+{
+    int len = 0;
+    while (s[len])
+        len++;
+
+    int padding = width - len;
+
+    if (left_align) {
+        kputs(s);
+        while (padding-- > 0)
+            kputc(' ');
+        return;
+    }
+
+    /* A leading minus sign must stay in front of zero padding, or -42 with
+     * %05d would come out as "000-42". */
+    if (zero_fill && s[0] == '-') {
+        kputc('-');
+        s++;
+        while (padding-- > 0)
+            kputc('0');
+        kputs(s);
+        return;
+    }
+
+    while (padding-- > 0)
+        kputc(zero_fill ? '0' : ' ');
+
+    kputs(s);
+}
+
+/* Supports %[-][0][width](c|s|d|i|u|x|X|p|%). */
 static void vkprintf(const char *fmt, va_list args)
 {
+    char buf[36];
+
     while (*fmt) {
         if (*fmt != '%') {
             kputc(*fmt++);
@@ -76,46 +117,70 @@ static void vkprintf(const char *fmt, va_list args)
 
         fmt++;  /* skip '%' */
 
-        /* Optional zero-padded width, e.g. %08x. Only '0' fill is supported. */
-        int pad = 0;
-        if (*fmt == '0') {
-            fmt++;
-            while (*fmt >= '0' && *fmt <= '9')
-                pad = pad * 10 + (*fmt++ - '0');
+        bool left_align = false;
+        bool zero_fill  = false;
+        int  width      = 0;
+
+        /* Flags. '-' and '0' may appear in either order. */
+        for (;;) {
+            if (*fmt == '-')      { left_align = true;  fmt++; }
+            else if (*fmt == '0') { zero_fill  = true;  fmt++; }
+            else break;
         }
+
+        while (*fmt >= '0' && *fmt <= '9')
+            width = width * 10 + (*fmt++ - '0');
 
         switch (*fmt) {
         case 'c':
-            kputc((char)va_arg(args, int));
+            buf[0] = (char)va_arg(args, int);
+            buf[1] = '\0';
+            emit_field(buf, width, left_align, false);
             break;
+
         case 's': {
             const char *s = va_arg(args, const char *);
-            kputs(s ? s : "(null)");
+            emit_field(s ? s : "(null)", width, left_align, false);
             break;
         }
+
         case 'd':
         case 'i':
-            print_int(va_arg(args, int32_t), pad);
+            emit_field(format_int(buf, va_arg(args, int32_t)),
+                       width, left_align, zero_fill);
             break;
+
         case 'u':
-            print_uint(va_arg(args, uint32_t), 10, false, pad);
+            emit_field(format_uint(buf, va_arg(args, uint32_t), 10, false),
+                       width, left_align, zero_fill);
             break;
+
         case 'x':
-            print_uint(va_arg(args, uint32_t), 16, false, pad);
+            emit_field(format_uint(buf, va_arg(args, uint32_t), 16, false),
+                       width, left_align, zero_fill);
             break;
+
         case 'X':
-            print_uint(va_arg(args, uint32_t), 16, true, pad);
+            emit_field(format_uint(buf, va_arg(args, uint32_t), 16, true),
+                       width, left_align, zero_fill);
             break;
+
         case 'p':
             kputs("0x");
-            print_uint((uint32_t)(uintptr_t)va_arg(args, void *), 16, false, 8);
+            emit_field(format_uint(buf, (uint32_t)(uintptr_t)va_arg(args, void *),
+                                   16, false), 8, false, true);
             break;
+
         case '%':
             kputc('%');
             break;
+
         case '\0':
             return;     /* trailing '%' at end of string */
+
         default:
+            /* Unknown conversion: echo it rather than silently swallowing it,
+             * so the mistake is visible in the output. */
             kputc('%');
             kputc(*fmt);
             break;
