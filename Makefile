@@ -21,8 +21,13 @@ AS := nasm
 # -fno-pie / -no-pie  we load at a fixed address; position independence breaks that
 # -fno-stack-protector the guard needs runtime support we do not have
 # -fno-builtin        stop gcc turning loops into calls to memcpy/memset we lack
+# -MMD -MP emit a .d file per object listing the headers it included, so that
+# editing a header rebuilds everything that uses it. Without this, changing a
+# constant in a header leaves stale objects linked against the old value —
+# a genuinely confusing class of bug, because the source and the binary
+# disagree with no warning anywhere.
 CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector -fno-builtin \
-          -Wall -Wextra -Werror -std=gnu11 -O2 -Ikernel
+          -Wall -Wextra -Werror -std=gnu11 -O2 -Ikernel -MMD -MP
 
 ASFLAGS := -f elf32
 
@@ -100,3 +105,7 @@ debug: $(ISO)
 
 clean:
 	rm -rf $(BUILD)
+
+# Pull in the generated header dependency files. The dash suppresses the
+# error on a clean tree where none exist yet.
+-include $(COBJ:.o=.d)

@@ -2,6 +2,8 @@
 #include "idt.h"
 #include "pic.h"
 #include "console.h"
+#include "vga.h"
+#include "task.h"
 
 static isr_handler_t handlers[IDT_ENTRIES];
 
@@ -63,18 +65,22 @@ void isr_handler(registers_t *regs)
         return;
     }
 
-    /* No handler registered. Report as much as possible before stopping —
-     * this output is the only evidence that will exist. */
+    /* No handler registered. Report as much as possible before deciding what
+     * to do — this output is the only evidence that will exist. */
     const char *name = (n < 32) ? exception_names[n] : "unknown";
 
+    vga_set_color(VGA_LRED, VGA_BLACK);
     kprintf("\n*** CPU EXCEPTION %u: %s ***\n", n, name);
+    vga_set_color(VGA_LGREY, VGA_BLACK);
+
     kprintf("  error code: %08x\n", regs->err_code);
 
     if (n == 14) {
-        uint32_t cr2 = read_cr2();
+        /* CR2 is written by the CPU with the address that faulted. Printing it
+         * is what proves the fault is genuine: we never assigned that value. */
+        kprintf("  cr2 (faulting address): %08x\n", read_cr2());
         /* Error code bits: 0=protection violation (else not-present),
          * 1=write (else read), 2=user mode (else kernel). */
-        kprintf("  cr2 (faulting address): %08x\n", cr2);
         kprintf("  cause: %s, %s, %s mode\n",
                 (regs->err_code & 0x1) ? "protection violation" : "page not present",
                 (regs->err_code & 0x2) ? "write" : "read",
@@ -82,6 +88,16 @@ void isr_handler(registers_t *regs)
     }
 
     dump_registers(regs);
+
+    /* A fault in an ordinary task kills only that task; the kernel keeps
+     * running and the shell stays usable. A fault in the kernel task itself
+     * has no such containment, so it is fatal. */
+    task_t *t = task_current();
+
+    if (t && t->id != KERNEL_TASK_ID) {
+        kprintf("  killed task '%s' (id %d) - kernel survives\n", t->name, t->id);
+        task_exit();
+    }
 
     panic("unhandled exception %u (%s) in kernel context", n, name);
 }

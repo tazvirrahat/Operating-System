@@ -17,6 +17,11 @@
 #define TASK_NAME_LEN 16
 #define TASK_STACK_SIZE 8192
 
+/* The boot context becomes task 1. It runs the shell and must never be killed:
+ * a fault here is unrecoverable, whereas a fault in any other task simply
+ * terminates that task. */
+#define KERNEL_TASK_ID 1
+
 typedef enum {
     TASK_READY,
     TASK_RUNNING,

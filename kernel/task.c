@@ -8,10 +8,13 @@
  * this is the first thing an overflowing stack destroys. */
 #define STACK_GUARD 0xDEADC0DE
 
-/* Timer ticks a task gets before it is preempted. At 100 Hz this is 50 ms —
- * short enough that interleaving is obvious on screen, long enough that
- * switching overhead stays irrelevant. */
-#define TIMESLICE 5
+/* Timer ticks a task gets before it is preempted. One tick at 100 Hz is 10 ms.
+ *
+ * A longer slice reduces switching overhead, but overhead is irrelevant at
+ * this scale and a short slice makes the behaviour far easier to observe:
+ * output interleaves finely, and critical sections a few milliseconds wide
+ * are reliably interrupted rather than sailing through untouched. */
+#define TIMESLICE 1
 
 /* Defined in context.asm. */
 extern void context_switch(uint32_t *old_esp_out, uint32_t new_esp);
