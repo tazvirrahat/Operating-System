@@ -188,15 +188,30 @@ uint32_t quiet_stop_and_read(void)
 
 /* ---- deliberate faults -------------------------------------------------- */
 
-/* Marked volatile so the compiler cannot constant-fold the division away. */
-static volatile int zero = 0;
-
 static void fault_div0(void)
 {
     kprintf("  [task] dividing by zero...\n");
 
-    volatile int result = 1 / zero;
-    (void)result;
+    /* This must be written in assembly, not C.
+     *
+     * The obvious C version -- `volatile int z = 0; int r = 1 / z;` -- does
+     * not fault, because gcc never emits a division at all. Dividing by zero
+     * is undefined behaviour, so the compiler may assume it cannot happen,
+     * and it rewrites `1 / x` into a branchless select: the result is x for
+     * x = 1 or -1, and zero otherwise. Marking the operand volatile forces
+     * the load but not the division, so it does not help either.
+     *
+     * Writing the div instruction directly leaves the compiler no room to
+     * reason about it, and the CPU raises exception 0 as intended. */
+    __asm__ volatile (
+        "xorl %%edx, %%edx  \n"     /* high half of the dividend */
+        "movl $1, %%eax     \n"     /* low half  */
+        "xorl %%ecx, %%ecx  \n"     /* divisor = 0 */
+        "divl %%ecx         \n"     /* -> #DE, exception vector 0 */
+        :
+        :
+        : "eax", "ecx", "edx", "cc"
+    );
 
     kprintf("  [task] still alive - the fault did not fire!\n");
 }
