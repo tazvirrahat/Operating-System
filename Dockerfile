@@ -1,0 +1,37 @@
+# Build environment for the bare-metal x86 kernel.
+#
+# Everything needed to compile, link, package and run the OS lives in here,
+# so nothing has to be installed on the host and every machine gets an
+# identical toolchain.
+#
+#   docker build -t myos-dev .
+#   docker run --rm -v "${PWD}:/os" myos-dev make run
+#
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # gcc, make, binutils
+    build-essential \
+    # 32-bit target support (-m32); we build i386, not x86-64
+    gcc-multilib \
+    # assembler for boot.S, isr.S, context.S
+    nasm \
+    # emulator: qemu-system-i386
+    qemu-system-x86 \
+    # grub-mkrescue plus the BIOS modules it needs to make a bootable ISO
+    grub-common \
+    grub-pc-bin \
+    xorriso \
+    mtools \
+    # debugger; attaches to QEMU's gdb socket
+    gdb \
+    # converts QEMU's screendump output (PPM) to PNG, so VGA text-mode output
+    # can be inspected and screenshotted without a display attached
+    netpbm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /os
+
+CMD ["/bin/bash"]
