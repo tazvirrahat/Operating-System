@@ -3,6 +3,7 @@
 #include "sync.h"
 #include "console.h"
 #include "pit.h"
+#include "paging.h"
 
 /* ---- race demonstration ------------------------------------------------- */
 
@@ -236,7 +237,35 @@ static void fault_gpf(void)
     kprintf("  [task] still alive - the fault did not fire!\n");
 }
 
-void fault_spawn(const char *kind)
+/* Address used by the "page" variant, set just before the task is created. */
+static volatile uint32_t fault_target;
+
+static void touch_address(uint32_t addr)
+{
+    /* Inline assembly for the same reason the division is: dereferencing an
+     * address the compiler believes is invalid is undefined behaviour, and it
+     * is free to delete the access rather than emit it. */
+    __asm__ volatile ("movl (%0), %%eax"
+                      :
+                      : "r"(addr)
+                      : "eax", "memory");
+}
+
+static void fault_null(void)
+{
+    kprintf("  [task] dereferencing a null pointer...\n");
+    touch_address(0);
+    kprintf("  [task] still alive - the fault did not fire!\n");
+}
+
+static void fault_page(void)
+{
+    kprintf("  [task] reading unmapped address %08x...\n", fault_target);
+    touch_address(fault_target);
+    kprintf("  [task] still alive - the fault did not fire!\n");
+}
+
+void fault_spawn(const char *kind, uint32_t addr)
 {
     task_entry_t entry;
 
@@ -246,8 +275,18 @@ void fault_spawn(const char *kind)
         entry = fault_opcode;
     else if (kind[0] == 'g')
         entry = fault_gpf;
-    else {
-        kprintf("fault: unknown kind '%s' (try div0, opcode or gpf)\n", kind);
+    else if (kind[0] == 'n')
+        entry = fault_null;
+    else if (kind[0] == 'p') {
+        if (!paging_enabled()) {
+            kprintf("fault: paging is not enabled, every address is valid\n");
+            return;
+        }
+        fault_target = addr ? addr : 0xE0000000u;
+        entry = fault_page;
+    } else {
+        kprintf("fault: unknown kind '%s'\n", kind);
+        kprintf("       try div0, opcode, gpf, null or page <addr>\n");
         return;
     }
 

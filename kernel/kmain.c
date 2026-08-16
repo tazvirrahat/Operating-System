@@ -14,6 +14,7 @@
 #include "pit.h"
 #include "keyboard.h"
 #include "heap.h"
+#include "paging.h"
 #include "task.h"
 #include "shell.h"
 #include "selftest.h"
@@ -54,10 +55,18 @@ void kmain(uint32_t magic, uint32_t *mb_info)
 
     gdt_init();
     isr_init();
-    idt_init();
+    idt_init();     /* from here a fault is reported instead of resetting */
     pic_init();
     pit_init(100);
     kbd_init();
+
+    /* Paging goes after the IDT so that a page fault has somewhere to land,
+     * and before the heap so that heap memory is mapped from the start. */
+    uint32_t ram_bytes = 16 * 1024 * 1024;
+    if (mb_info && (mb_info[0] & 0x1))
+        ram_bytes = (mb_info[1] + mb_info[2]) * 1024;
+
+    paging_init(ram_bytes);
 
     /* Page-align the heap so it never shares a page with kernel data. */
     uint32_t heap_start = ((uint32_t)&kernel_end + 0xFFF) & ~0xFFFU;

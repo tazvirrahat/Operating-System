@@ -196,13 +196,21 @@ static void cmd_race(int argc, char **argv)
 static void cmd_fault(int argc, char **argv)
 {
     if (argc < 2) {
-        kprintf("usage: fault div0|opcode|gpf\n");
+        kprintf("usage: fault div0|opcode|gpf|null|page [addr]\n");
         kprintf("  raises a real CPU exception inside a spawned task.\n");
         kprintf("  the task is killed; the kernel and this shell survive.\n");
+        kprintf("  null and page report CR2, which the CPU fills in with the\n");
+        kprintf("  faulting address - a value the kernel never assigned.\n");
         return;
     }
 
-    fault_spawn(argv[1]);
+    uint32_t addr = 0;
+    if (argc > 2) {
+        const char *end;
+        addr = strtoul(argv[2], &end);
+    }
+
+    fault_spawn(argv[1], addr);
 }
 
 static void cmd_top(int argc, char **argv)

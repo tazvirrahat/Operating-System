@@ -41,10 +41,11 @@ uint32_t quiet_stop_and_read(void);
  * kind: "div0"   integer division by zero      -> exception 0
  *       "opcode" the ud2 instruction           -> exception 6
  *       "gpf"    load an invalid segment       -> exception 13
+ *       "null"   dereference address 0         -> exception 14
+ *       "page"   dereference `addr`            -> exception 14
  *
- * Note there is no "pagefault" option: without paging enabled every linear
- * address is valid, so no dereference can fault. That demo arrives with the
- * MMU. */
-void fault_spawn(const char *kind);
+ * The last two require paging: without an MMU every linear address is valid
+ * and no dereference can fault at all. */
+void fault_spawn(const char *kind, uint32_t addr);
 
 #endif /* DEMOS_H */
