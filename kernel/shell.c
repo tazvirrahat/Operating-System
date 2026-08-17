@@ -12,6 +12,8 @@
 #include "gui.h"
 #include "mouse.h"
 #include "pci.h"
+#include "svga.h"
+#include "fb.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -354,6 +356,101 @@ static void cmd_lspci_detail(const pci_device_t *d)
     }
 }
 
+static void cmd_gpuinfo(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    kprintf("\ndisplay adapter : %s\n", svga_name());
+
+    if (!svga_available()) {
+        kprintf("\nno accelerated adapter found. the framebuffer set up by the\n");
+        kprintf("firmware at boot is used instead, with every pixel written by\n");
+        kprintf("the CPU. that path works on any machine, which is why it is\n");
+        kprintf("the fallback.\n\n");
+        kprintf("under VMware the adapter is present and this reports its\n");
+        kprintf("capabilities.\n\n");
+        return;
+    }
+
+    kprintf("framebuffer     : %08x\n", svga_framebuffer());
+    kprintf("capabilities    : %08x\n", svga_fifo_capabilities());
+    kprintf("accel fill      : %s\n", svga_can_fill() ? "yes" : "no");
+    kprintf("accel copy      : %s\n", svga_can_copy() ? "yes" : "no");
+    kprintf("commands issued : %u\n", svga_command_count());
+
+    kprintf("\nfound by scanning the PCI bus, not by assuming an address.\n");
+    kprintf("commands go into a queue the adapter reads, so a rectangle fill\n");
+    kprintf("is six words rather than writing every pixel.\n\n");
+}
+
+static void cmd_gputest(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    if (!fb_available()) {
+        kprintf("no framebuffer; nothing to measure.\n");
+        return;
+    }
+
+    if (!svga_can_fill()) {
+        kprintf("\nno accelerated adapter on this machine, so there is nothing\n");
+        kprintf("to compare against. run this under VMware, or QEMU with\n");
+        kprintf("-vga vmware.\n\n");
+        return;
+    }
+
+    const int rounds = 60;
+    int w = (int)fb_width();
+    int h = (int)fb_height();
+
+    kprintf("\nfilling the whole %dx%d screen %d times, both ways.\n", w, h, rounds);
+    kprintf("that is %u pixels per fill.\n\n", (uint32_t)(w * h));
+
+    /* Software: every pixel written by the CPU, then copied to video memory.
+     * This is the path used when no accelerated adapter is present. */
+    uint32_t start = pit_ticks();
+    for (int i = 0; i < rounds; i++) {
+        fb_fill_rect(0, 0, w, h, fb_rgb((uint8_t)(i * 4), 20, 60));
+        fb_present();
+    }
+    uint32_t cpu_ticks = pit_ticks() - start;
+
+    /* Hardware: the same fill expressed as six words in the command queue.
+     * svga_sync waits for the adapter to finish, so the timing covers the work
+     * actually being done rather than just the queuing of it. */
+    start = pit_ticks();
+    for (int i = 0; i < rounds; i++) {
+        svga_fill_rect(0, 0, w, h, fb_rgb(20, (uint8_t)(i * 4), 60));
+        svga_sync();
+    }
+    uint32_t gpu_ticks = pit_ticks() - start;
+
+    fb_mark_all_dirty();
+    fb_present();
+
+    kprintf("  cpu (software) : %u ticks  (%u ms)\n", cpu_ticks, cpu_ticks * 10);
+    kprintf("  gpu (adapter)  : %u ticks  (%u ms)\n", gpu_ticks, gpu_ticks * 10);
+
+    if (gpu_ticks == 0) {
+        /* Faster than a 100 Hz timer can resolve. Reporting "infinitely
+         * faster" would be nonsense, so state the bound the measurement
+         * actually supports: it finished within one tick, so it is at least
+         * as many times faster as the software path took ticks. */
+        kprintf("\n  the adapter finished within a single timer tick, so this\n");
+        kprintf("  only bounds it: at least %u times faster. measuring closer\n",
+                cpu_ticks);
+        kprintf("  would need a finer clock than 100 Hz.\n");
+    } else if (cpu_ticks > gpu_ticks)
+        kprintf("\n  %u times faster.\n", cpu_ticks / gpu_ticks);
+    else
+        kprintf("\n  no faster here - emulated adapters do the same work on the\n"
+                "  host CPU, so the win is smaller than on real hardware.\n");
+
+    kprintf("\n  the difference is what the work costs: %u pixel writes against\n",
+            (uint32_t)(w * h));
+    kprintf("  six words in a queue the adapter reads.\n\n");
+}
+
 static void cmd_gui(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -450,7 +547,9 @@ static const command_t commands[] = {
     { "gui",      "gui",              "graphical mode: windows, mouse, terminal",  cmd_gui      },
     { "top",      "top",              "live kernel monitor",                       cmd_top      },
     { "meminfo",  "meminfo",          "heap usage and block list state",           cmd_meminfo  },
-    { "lspci",    "lspci",            "devices found on the pci bus",              cmd_lspci    },
+    { "lspci",    "lspci [n]",        "devices found on the pci bus",              cmd_lspci    },
+    { "gpuinfo",  "gpuinfo",          "graphics adapter and acceleration",         cmd_gpuinfo  },
+    { "gputest",  "gputest",          "benchmark cpu fills against gpu fills",      cmd_gputest  },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },
     { "echo",     "echo <text>",      "print arguments",                           cmd_echo     },
     { "clear",    "clear",            "clear the screen",                          cmd_clear    },

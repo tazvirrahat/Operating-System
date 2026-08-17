@@ -15,6 +15,7 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "pci.h"
+#include "svga.h"
 #include "heap.h"
 #include "paging.h"
 #include "task.h"
@@ -97,6 +98,11 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
      * the serial port only, because in a graphics mode the VGA text buffer
      * displays nothing. The serial log therefore holds the complete boot
      * record even though the screen does not. */
+    /* The graphics adapter is looked for after paging, because its registers
+     * and command FIFO live at PCI-assigned addresses that have to be mapped
+     * before they can be touched. */
+    svga_init();
+
     if (fb_init(mb)) {
         fbcon_init();
         banner();       /* repaint the header now that there is a screen */

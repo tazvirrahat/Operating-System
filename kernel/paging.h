@@ -22,6 +22,15 @@
  * page fault. Pass 0 if there is no framebuffer. */
 void paging_init(uint32_t memory_bytes, uint32_t fb_addr, uint32_t fb_size);
 
+/* Map a physical region after paging is already running.
+ *
+ * Device memory found by PCI enumeration cannot be mapped at startup, because
+ * its address is not known until the bus has been scanned. Adding directory
+ * entries afterwards is safe as long as the TLB is invalidated, which this
+ * does — a stale entry would otherwise keep reporting the region as absent.
+ */
+void paging_map_region(uint32_t addr, uint32_t size);
+
 /* True once the MMU is on. */
 bool paging_enabled(void);
 

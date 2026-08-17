@@ -161,6 +161,40 @@ void paging_init(uint32_t memory_bytes, uint32_t fb_addr, uint32_t fb_size)
             mapped_bytes / (1024 * 1024));
 }
 
+void paging_map_region(uint32_t addr, uint32_t size)
+{
+    if (!enabled || !addr || !size)
+        return;
+
+    uint32_t first = addr / LARGE_PAGE_BYTES;
+    uint32_t last  = (addr + size + LARGE_PAGE_BYTES - 1) / LARGE_PAGE_BYTES;
+
+    bool changed = false;
+
+    for (uint32_t i = first; i < last && i < ENTRIES; i++) {
+        if (page_directory[i])
+            continue;
+
+        page_directory[i] = (i * LARGE_PAGE_BYTES)
+                          | PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE_4MB;
+        mapped_bytes += LARGE_PAGE_BYTES;
+        changed = true;
+    }
+
+    if (!changed)
+        return;
+
+    /* Reloading CR3 flushes the whole TLB. A finer invlpg per page would be
+     * cheaper, but this happens a handful of times at boot. */
+    __asm__ volatile (
+        "movl %%cr3, %%eax  \n"
+        "movl %%eax, %%cr3  \n"
+        :
+        :
+        : "eax", "memory"
+    );
+}
+
 bool paging_enabled(void) { return enabled; }
 
 uint32_t paging_mapped_bytes(void) { return mapped_bytes; }

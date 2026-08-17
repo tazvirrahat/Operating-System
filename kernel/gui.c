@@ -566,7 +566,7 @@ void gui_run(void)
 
         fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
         fb_text(10, 8, "MyOS", col_white, SCALE);
-        fb_text(10 + 6 * CHROME_W, 8, "bare metal x86", col_accent, SCALE);
+        fb_text(10 + 6 * CHROME_W, 8, "an operating system, running on the hardware", col_accent, SCALE);
 
         for (int i = 0; i < window_count; i++) {
             if (!windows[i].visible)

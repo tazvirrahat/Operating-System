@@ -2,6 +2,7 @@
 #include "heap.h"
 #include "string.h"
 #include "console.h"
+#include "svga.h"
 
 extern const uint8_t font8x8[95][8];
 
@@ -154,6 +155,13 @@ void fb_present(void)
 
         memcpy((void *)dst, src, (uint32_t)w * 4);
     }
+
+    /* On an SVGA adapter, writing to the framebuffer is not enough on its own:
+     * the device has to be told which region changed before it will show it.
+     * The bounds are already tracked for the copy above, so the same rectangle
+     * is handed to the adapter. */
+    if (svga_available())
+        svga_update(dirty_x0, dirty_y0, w, dirty_y1 - dirty_y0);
 
     dirty = false;
 }
