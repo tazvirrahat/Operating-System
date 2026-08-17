@@ -14,6 +14,7 @@
 #include "pit.h"
 #include "keyboard.h"
 #include "mouse.h"
+#include "pci.h"
 #include "heap.h"
 #include "paging.h"
 #include "task.h"
@@ -66,6 +67,10 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
     pit_init(100);
     kbd_init();
     mouse_init();   /* same 8042 controller as the keyboard, on IRQ 12 */
+
+    /* Everything above lives at an address fixed since the original PC.
+     * Anything newer has to be discovered. */
+    pci_init();
 
     /* Paging goes after the IDT so that a page fault has somewhere to land,
      * and before the heap so that heap memory is mapped from the start.

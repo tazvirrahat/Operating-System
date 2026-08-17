@@ -11,6 +11,7 @@
 #include "selftest.h"
 #include "gui.h"
 #include "mouse.h"
+#include "pci.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -295,6 +296,64 @@ static void cmd_user(int argc, char **argv)
     user_mode_demo(use_syscall);
 }
 
+static void cmd_lspci_detail(const pci_device_t *d);
+
+static void cmd_lspci(int argc, char **argv)
+{
+    /* With an index, show that device's base address registers. The BARs are
+     * where a driver finds the hardware: the graphics driver reads them to
+     * locate the registers and framebuffer it has to talk to. */
+    if (argc > 1) {
+        const char *end;
+        int n = (int)strtoul(argv[1], &end);
+
+        const pci_device_t *d = pci_get_device(n);
+        if (!d) {
+            kprintf("lspci: no device %d (there are %d)\n",
+                    n, pci_device_count());
+            return;
+        }
+
+        kprintf("\ndevice %d at %02x:%02x.%d\n",
+                n, d->bus, d->device, d->function);
+        cmd_lspci_detail(d);
+        kprintf("\n");
+        return;
+    }
+
+    kprintf("\n %-3s %-8s %-9s %-9s %-24s %s\n", "#",
+            "ADDRESS", "VENDOR", "DEVICE", "CLASS", "IRQ");
+
+    for (int i = 0; i < pci_device_count(); i++) {
+        const pci_device_t *d = pci_get_device(i);
+
+        kprintf(" %-3d %02x:%02x.%d   %04x      %04x      %-24s %d\n", i,
+                d->bus, d->device, d->function,
+                d->vendor_id, d->device_id,
+                pci_class_name(d->class_code, d->subclass),
+                d->irq_line == 0xFF ? -1 : d->irq_line);
+    }
+
+    kprintf("\n %d device%s, discovered rather than hardcoded - their\n",
+            pci_device_count(), pci_device_count() == 1 ? "" : "s");
+    kprintf(" addresses are assigned by the firmware at boot.\n");
+    kprintf(" 'lspci <n>' shows one device's base address registers.\n\n");
+}
+
+static void cmd_lspci_detail(const pci_device_t *d)
+{
+    kprintf("  vendor %04x device %04x  class %02x:%02x  rev %02x\n",
+            d->vendor_id, d->device_id, d->class_code, d->subclass, d->revision);
+
+    for (int i = 0; i < 6; i++) {
+        if (d->bar[i] == 0)
+            continue;
+
+        kprintf("  bar%d: %08x  %s\n", i, pci_bar_address(d->bar[i]),
+                pci_bar_is_io(d->bar[i]) ? "i/o ports" : "memory");
+    }
+}
+
 static void cmd_gui(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -391,6 +450,7 @@ static const command_t commands[] = {
     { "gui",      "gui",              "graphical mode: windows, mouse, terminal",  cmd_gui      },
     { "top",      "top",              "live kernel monitor",                       cmd_top      },
     { "meminfo",  "meminfo",          "heap usage and block list state",           cmd_meminfo  },
+    { "lspci",    "lspci",            "devices found on the pci bus",              cmd_lspci    },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },
     { "echo",     "echo <text>",      "print arguments",                           cmd_echo     },
     { "clear",    "clear",            "clear the screen",                          cmd_clear    },

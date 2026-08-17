@@ -33,6 +33,20 @@ static inline uint16_t inw(uint16_t port)
     return ret;
 }
 
+/* 32-bit port access. Needed for PCI configuration space, which is addressed
+ * a dword at a time through a pair of ports. */
+static inline void outl(uint16_t port, uint32_t value)
+{
+    __asm__ volatile ("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t ret;
+    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 /* Short delay used between writes to slow legacy devices (notably the PIC).
  * Writing to unused port 0x80 takes roughly a bus cycle and has no effect. */
 static inline void io_wait(void)
