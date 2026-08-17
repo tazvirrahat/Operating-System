@@ -81,9 +81,22 @@ static void keyboard_isr(registers_t *regs)
     }
 
     if (expecting_extended) {
-        /* Arrow keys and friends. Nothing consumes them yet, so swallow the
-         * second byte rather than letting it be decoded as an unrelated key. */
         expecting_extended = false;
+
+        /* Extended keys repeat the same make/break convention. Only presses
+         * are interesting; releases are dropped so a key does not register
+         * twice. */
+        if (code & BREAK_BIT)
+            return;
+
+        switch (code) {
+        case 0x48: buffer_push(KEY_UP);    break;
+        case 0x50: buffer_push(KEY_DOWN);  break;
+        case 0x4B: buffer_push(KEY_LEFT);  break;
+        case 0x4D: buffer_push(KEY_RIGHT); break;
+        default:   break;   /* other extended keys are not used */
+        }
+
         return;
     }
 

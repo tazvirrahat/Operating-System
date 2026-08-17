@@ -70,6 +70,16 @@ uint32_t task_switch_count(void);
  * another context. */
 void    task_reap(void);
 
+/* Short critical sections that must not be split across a context switch.
+ *
+ * Nests, so a caller need not know whether an outer section is already open.
+ * Interrupts stay enabled throughout — the timer keeps ticking and time is
+ * still accounted, only the reschedule is deferred. Use this for regions
+ * measured in microseconds; anything longer belongs behind a mutex.
+ */
+void    preempt_disable(void);
+void    preempt_enable(void);
+
 /* Preemption ablation. Masking preemption should visibly break scheduling:
  * with it off, the running task keeps the CPU indefinitely. That failure is
  * the proof that preemption was doing the work in the first place. */

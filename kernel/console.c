@@ -1,6 +1,7 @@
 #include "console.h"
 #include "vga.h"
 #include "serial.h"
+#include "task.h"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -206,9 +207,25 @@ static void vkprintf(const char *fmt, va_list args)
 void kprintf(const char *fmt, ...)
 {
     va_list args;
+
+    /* The console is shared state like any other. Without this, a task
+     * preempted partway through a call has its output spliced by whatever
+     * runs next -- "c15" arriving as "c" ... "15" with another task's text
+     * wedged between. Harmless to the kernel, but it makes concurrent output
+     * unreadable and is a poor advertisement in a system that spends its
+     * time demonstrating synchronisation.
+     *
+     * Deferring preemption rather than taking a mutex is deliberate: a fault
+     * handler prints, and a fault can occur inside a kprintf. A lock would
+     * deadlock against its own holder there, whereas a deferral counter
+     * simply nests. */
+    preempt_disable();
+
     va_start(args, fmt);
     vkprintf(fmt, args);
     va_end(args);
+
+    preempt_enable();
 }
 
 void panic(const char *fmt, ...)

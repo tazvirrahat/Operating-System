@@ -123,6 +123,29 @@ static void cmd_spawn(int argc, char **argv)
     kprintf("\n\ndone. %u context switches so far.\n\n", task_switch_count());
 }
 
+static void cmd_prodcons(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    kprintf("\nbounded buffer, %d slots, %d items.\n",
+            PC_BUFFER_SLOTS, PC_ITEM_COUNT);
+    kprintf("producer blocks when full, consumer blocks when empty -\n");
+    kprintf("neither polls a flag. P = produced, c = consumed:\n\n  ");
+
+    bool ok = producer_consumer_run(true);
+
+    kprintf("\n\n");
+    vga_set_color(ok ? VGA_LGREEN : VGA_LRED, VGA_BLACK);
+    kprintf("%s\n", ok
+            ? "all items received exactly once, in order, buffer never exceeded."
+            : "FAILED: items lost, reordered, or the buffer overflowed.");
+    vga_set_color(VGA_LGREY, VGA_BLACK);
+
+    kprintf("\nnotice the interleaving stays within %d of itself - that bound\n",
+            PC_BUFFER_SLOTS);
+    kprintf("is the semaphores holding the producer back.\n\n");
+}
+
 static void cmd_bg(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "stop") == 0) {
@@ -345,6 +368,7 @@ static const command_t commands[] = {
     { "bg",       "bg [1-4] | stop",  "background workers, shell stays usable",    cmd_bg       },
     { "preempt",  "preempt on|off",   "toggle timer preemption (ablation test)",   cmd_preempt  },
     { "race",     "race on|off [n]",  "shared counter with and without a mutex",   cmd_race     },
+    { "prodcons", "prodcons",         "bounded buffer with counting semaphores",   cmd_prodcons },
     { "fault",    "fault <kind>",     "raise a real CPU exception in a task",      cmd_fault    },
     { "user",     "user [--syscall]", "run a task in ring 3 (privilege demo)",     cmd_user     },
     { "tasks",    "tasks",            "list tasks and their CPU time",             cmd_tasks    },
@@ -404,12 +428,79 @@ static void prompt(void)
     vga_set_color(VGA_LGREY, VGA_BLACK);
 }
 
+/* ---- command history ---------------------------------------------------- */
+
+#define HISTORY_MAX 16
+
+static char history[HISTORY_MAX][LINE_MAX];
+static int  history_count;      /* entries stored, saturating at HISTORY_MAX */
+static int  history_next;       /* where the next entry goes (circular) */
+
+static void history_add(const char *line)
+{
+    if (!line[0])
+        return;
+
+    /* Skip consecutive duplicates: repeating a command should not fill the
+     * history with copies of it. */
+    if (history_count > 0) {
+        int last = (history_next - 1 + HISTORY_MAX) % HISTORY_MAX;
+        if (strcmp(history[last], line) == 0)
+            return;
+    }
+
+    strncpy(history[history_next], line, LINE_MAX - 1);
+    history[history_next][LINE_MAX - 1] = '\0';
+
+    history_next = (history_next + 1) % HISTORY_MAX;
+    if (history_count < HISTORY_MAX)
+        history_count++;
+}
+
+/* Fetch the entry `back` steps into the past, where 1 is the most recent.
+ * Returns NULL when `back` runs off the end of what we have kept. */
+static const char *history_get(int back)
+{
+    if (back < 1 || back > history_count)
+        return 0;
+
+    int index = (history_next - back + HISTORY_MAX * 2) % HISTORY_MAX;
+    return history[index];
+}
+
+/* Erase the current input and print a different line in its place. Backspace
+ * only moves the cursor left, so each character has to be overwritten with a
+ * space and then backed over a second time. */
+static void replace_line(char *line, int *len, const char *replacement)
+{
+    for (int i = 0; i < *len; i++)
+        kprintf("\b \b");
+
+    *len = 0;
+
+    if (!replacement)
+        return;
+
+    while (replacement[*len] && *len < LINE_MAX - 1) {
+        line[*len] = replacement[*len];
+        kputc(line[*len]);
+        (*len)++;
+    }
+
+    line[*len] = '\0';
+}
+
 void shell_run(void)
 {
     char line[LINE_MAX];
     int  len = 0;
 
-    kprintf("\ntype 'help' for commands, or 'demo' for a guided tour.\n\n");
+    /* How far back in history the user has scrolled; 0 means "editing a fresh
+     * line", which is why the down arrow can return to an empty prompt. */
+    int  browsing = 0;
+
+    kprintf("\ntype 'help' for commands, or 'demo' for a guided tour.\n");
+    kprintf("use the up and down arrows to recall previous commands.\n\n");
     prompt();
 
     for (;;) {
@@ -418,8 +509,12 @@ void shell_run(void)
         if (c == '\n') {
             kputc('\n');
             line[len] = '\0';
+
+            history_add(line);
             dispatch(line);
+
             len = 0;
+            browsing = 0;
             prompt();
             continue;
         }
@@ -428,9 +523,39 @@ void shell_run(void)
             if (len > 0) {
                 len--;
                 kputc('\b');
+                kputc(' ');
+                kputc('\b');
             }
             continue;
         }
+
+        if (c == KEY_UP) {
+            const char *entry = history_get(browsing + 1);
+            if (entry) {
+                browsing++;
+                replace_line(line, &len, entry);
+            }
+            continue;
+        }
+
+        if (c == KEY_DOWN) {
+            if (browsing > 1) {
+                browsing--;
+                replace_line(line, &len, history_get(browsing));
+            } else if (browsing == 1) {
+                /* Stepping forward past the newest entry returns to the empty
+                 * line the user was originally typing. */
+                browsing = 0;
+                replace_line(line, &len, 0);
+            }
+            continue;
+        }
+
+        /* Left and right are decoded by the driver but the line editor only
+         * supports appending, so they are ignored rather than inserted as
+         * stray control characters. */
+        if (c == KEY_LEFT || c == KEY_RIGHT)
+            continue;
 
         if (len < LINE_MAX - 1) {
             line[len++] = c;

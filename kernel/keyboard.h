@@ -10,6 +10,14 @@
 
 #include <stdbool.h>
 
+/* Keys that have no ASCII representation are reported as control codes that
+ * a keyboard cannot otherwise produce, so consumers can switch on them
+ * alongside ordinary characters without widening the return type. */
+#define KEY_UP    0x11
+#define KEY_DOWN  0x12
+#define KEY_LEFT  0x13
+#define KEY_RIGHT 0x14
+
 void kbd_init(void);
 
 /* Non-blocking: returns 0 if no key is waiting. */

@@ -27,6 +27,9 @@ static int      slice_remaining;
 static bool     preempt = true;
 static uint32_t switches;
 
+/* Nesting depth of preempt_disable(). Non-zero defers rescheduling. */
+static volatile int preempt_depth;
+
 const char *task_state_name(task_state_t s)
 {
     switch (s) {
@@ -192,16 +195,37 @@ static void schedule(void)
      * a long time later, and on a different stack than the caller expects. */
 }
 
+void preempt_disable(void)
+{
+    /* No lock needed: a context switch can only happen through this same
+     * counter, and an interrupt landing between the read and the write would
+     * still leave the value consistent because nothing else writes it. */
+    preempt_depth++;
+}
+
+void preempt_enable(void)
+{
+    if (preempt_depth > 0)
+        preempt_depth--;
+}
+
 void task_tick(void)
 {
     if (!current)
         return;
 
+    /* Time is accounted even inside a critical section — only the reschedule
+     * is deferred, so a task cannot hide its CPU usage by deferring. */
     current->ticks++;
 
     /* Ablation switch. With preemption off the running task is never taken
      * off the CPU, which is exactly the failure the demo shows. */
     if (!preempt)
+        return;
+
+    /* Someone is midway through something that must not be split. Let the
+     * slice run over rather than switch; they will be along shortly. */
+    if (preempt_depth > 0)
         return;
 
     if (--slice_remaining > 0)

@@ -34,6 +34,20 @@ void spawn_printers(int n);
 void quiet_start(void);
 uint32_t quiet_stop_and_read(void);
 
+/* Bounded-buffer producer/consumer.
+ *
+ * Two counting semaphores track free slots and filled slots; a mutex protects
+ * the buffer itself. The producer blocks when the buffer is full and the
+ * consumer blocks when it is empty, without either polling a flag.
+ *
+ * Returns true if every item was received exactly once, in order, and the
+ * buffer never exceeded its capacity or went negative. */
+bool producer_consumer_run(bool verbose);
+
+/* Capacity and item count, for reporting. */
+#define PC_BUFFER_SLOTS 4
+#define PC_ITEM_COUNT   24
+
 /* Spawn `n` long-running silent workers and return immediately, so the shell
  * stays usable while they run. Mainly so the monitor has something to show. */
 void spawn_background(int n);

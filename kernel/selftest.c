@@ -179,6 +179,15 @@ static void test_sync(void)
     sem_wait(&s);
     sem_post(&s);
     CHECK(s.count == 1, "semaphore counts down and back up correctly\n");
+
+    /* And the semaphore doing real work: a bounded buffer where the producer
+     * must block when full and the consumer when empty. Checks every item
+     * arrived exactly once in order, and that the buffer never exceeded its
+     * capacity — occupancy measured from head and tail directly, not from the
+     * semaphore being tested. */
+    CHECK(producer_consumer_run(false),
+          "producer/consumer: %d items through a %d-slot buffer, none lost\n",
+          PC_ITEM_COUNT, PC_BUFFER_SLOTS);
 }
 
 /* ---- timer -------------------------------------------------------------- */

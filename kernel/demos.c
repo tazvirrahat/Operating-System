@@ -200,6 +200,114 @@ uint32_t quiet_stop_and_read(void)
     return quiet_counter;
 }
 
+/* ---- bounded-buffer producer/consumer ----------------------------------- */
+
+/* The classic use for counting semaphores, and the reason they exist at all:
+ * a mutex alone cannot express "wait until there is room" or "wait until there
+ * is something to take". Those are counts, not ownership. */
+
+static uint32_t pc_buffer[PC_BUFFER_SLOTS];
+static int      pc_head, pc_tail;
+
+static sem_t    pc_free_slots;      /* how many slots are empty */
+static sem_t    pc_used_slots;      /* how many slots hold an item */
+static mutex_t  pc_lock;            /* protects head/tail/buffer */
+
+static volatile int      pc_received;
+static volatile bool     pc_ordered;
+static volatile int      pc_max_occupancy;
+static volatile bool     pc_overflowed;
+static volatile int      pc_done;
+static bool              pc_verbose;
+
+static void pc_producer(void)
+{
+    for (uint32_t item = 1; item <= PC_ITEM_COUNT; item++) {
+        sem_wait(&pc_free_slots);       /* blocks while the buffer is full */
+
+        mutex_lock(&pc_lock);
+
+        pc_buffer[pc_head] = item;
+        pc_head = (pc_head + 1) % PC_BUFFER_SLOTS;
+
+        /* Occupancy is derived here rather than trusted from the semaphore,
+         * so the check is independent of the thing being tested. */
+        int occupancy = (pc_head - pc_tail + PC_BUFFER_SLOTS) % PC_BUFFER_SLOTS;
+        if (occupancy == 0)
+            occupancy = PC_BUFFER_SLOTS;    /* full wraps to zero */
+
+        if (occupancy > pc_max_occupancy)
+            pc_max_occupancy = occupancy;
+        if (occupancy > PC_BUFFER_SLOTS)
+            pc_overflowed = true;
+
+        mutex_unlock(&pc_lock);
+
+        if (pc_verbose)
+            kprintf("P%u ", item);
+
+        sem_post(&pc_used_slots);       /* wake a waiting consumer */
+    }
+
+    pc_done++;
+}
+
+static void pc_consumer(void)
+{
+    for (uint32_t expected = 1; expected <= PC_ITEM_COUNT; expected++) {
+        sem_wait(&pc_used_slots);       /* blocks while the buffer is empty */
+
+        mutex_lock(&pc_lock);
+
+        uint32_t item = pc_buffer[pc_tail];
+        pc_tail = (pc_tail + 1) % PC_BUFFER_SLOTS;
+
+        mutex_unlock(&pc_lock);
+
+        if (item != expected)
+            pc_ordered = false;
+
+        pc_received++;
+
+        if (pc_verbose)
+            kprintf("c%u ", item);
+
+        sem_post(&pc_free_slots);       /* wake a waiting producer */
+    }
+
+    pc_done++;
+}
+
+bool producer_consumer_run(bool verbose)
+{
+    pc_head = pc_tail = 0;
+    pc_received = 0;
+    pc_ordered = true;
+    pc_max_occupancy = 0;
+    pc_overflowed = false;
+    pc_done = 0;
+    pc_verbose = verbose;
+
+    /* Every slot starts free and none holds anything. These two counts are
+     * what make the blocking work in both directions. */
+    sem_init(&pc_free_slots, PC_BUFFER_SLOTS);
+    sem_init(&pc_used_slots, 0);
+    mutex_init(&pc_lock);
+
+    task_create("producer", pc_producer);
+    task_create("consumer", pc_consumer);
+
+    while (pc_done < 2)
+        task_yield();
+
+    task_reap();
+
+    return pc_received == PC_ITEM_COUNT
+        && pc_ordered
+        && !pc_overflowed
+        && pc_max_occupancy <= PC_BUFFER_SLOTS;
+}
+
 /* ---- long-running background workers ------------------------------------ */
 
 static volatile int background_stop;
