@@ -13,21 +13,30 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ---- layout --------------------------------------------------------------
+/* ---- layout ---------------------------------------------------------------
  *
- * Everything scales from the framebuffer size reported at boot rather than
- * being hardcoded, because GRUB gives us the closest mode it can rather than
- * exactly what was asked for.
+ * Nothing here is a fixed pixel position. GRUB gives whatever mode the
+ * firmware actually offers, which has ranged from 640x480 to 1920x1080 across
+ * the machines this has run on, so every size below is derived from the
+ * framebuffer dimensions at startup. An earlier version hardcoded sizes for a
+ * large screen and simply ran off the edge of a small one.
  */
 
-#define TASKBAR_H   48
-#define TITLE_H     32
-#define BORDER      2
-#define TEXT_SCALE  2
-#define CELL_W      (8 * TEXT_SCALE)
-#define CELL_H      (8 * TEXT_SCALE)
+static int SCR_W, SCR_H;
+static int SCALE;           /* chrome font scale: titles, taskbar, labels */
+static int TERM_SCALE;      /* terminal font scale, deliberately smaller */
+static int CELL_W, CELL_H;      /* terminal cell size, from TERM_SCALE */
+static int CHROME_W, CHROME_H;  /* chrome cell size, from SCALE */
+static int TASKBAR_H;
+static int TITLE_H;
 
+#define BORDER 2
 #define MAX_WINDOWS 2
+
+/* Upper bounds on the terminal grid; the part actually used is computed from
+ * the window size. */
+#define MAX_COLS 160
+#define MAX_ROWS 80
 
 typedef enum { WIN_TERMINAL, WIN_STATS } window_kind_t;
 
@@ -42,19 +51,18 @@ static window_t windows[MAX_WINDOWS];
 static int      window_count;
 static int      focused;
 
-static int dragging = -1;
-static int drag_dx, drag_dy;
+static int  dragging = -1;
+static int  drag_dx, drag_dy;
+static bool start_menu_open;
 
 static uint32_t col_desktop, col_face, col_edge, col_shade;
 static uint32_t col_title_on, col_title_off, col_term_bg, col_term_fg;
-static uint32_t col_bar, col_bar_btn, col_bar_btn_on, col_white, col_black;
+static uint32_t col_bar, col_btn, col_btn_on, col_white, col_black, col_accent;
 
 /* ---- terminal ------------------------------------------------------------ */
 
-#define TERM_COLS 72
-#define TERM_ROWS 34
-
-static char term_cells[TERM_ROWS][TERM_COLS];
+static char term_cells[MAX_ROWS][MAX_COLS];
+static int  term_cols, term_rows;
 static int  term_cx, term_cy;
 
 static void term_clear(void)
@@ -65,9 +73,11 @@ static void term_clear(void)
 
 static void term_scroll(void)
 {
-    memmove(term_cells[0], term_cells[1], (TERM_ROWS - 1) * TERM_COLS);
-    memset(term_cells[TERM_ROWS - 1], ' ', TERM_COLS);
-    term_cy = TERM_ROWS - 1;
+    for (int y = 1; y < term_rows; y++)
+        memcpy(term_cells[y - 1], term_cells[y], (uint32_t)term_cols);
+
+    memset(term_cells[term_rows - 1], ' ', (uint32_t)term_cols);
+    term_cy = term_rows - 1;
 }
 
 static void term_putc(char c)
@@ -81,16 +91,32 @@ static void term_putc(char c)
         term_cells[term_cy][term_cx++] = c;
     }
 
-    if (term_cx >= TERM_COLS) { term_cx = 0; term_cy++; }
-    if (term_cy >= TERM_ROWS) term_scroll();
+    if (term_cx >= term_cols) { term_cx = 0; term_cy++; }
+    if (term_cy >= term_rows) term_scroll();
 }
 
 /* ---- drawing ------------------------------------------------------------- */
 
+static bool in_rect(int px, int py, int x, int y, int w, int h)
+{
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+/* Clamp a window so its title bar always stays reachable. A window dragged
+ * fully off screen would otherwise be impossible to get back. */
+static void clamp_window(window_t *win)
+{
+    int min_visible = 60;
+
+    if (win->x > SCR_W - min_visible) win->x = SCR_W - min_visible;
+    if (win->y > SCR_H - TASKBAR_H - TITLE_H) win->y = SCR_H - TASKBAR_H - TITLE_H;
+    if (win->x + win->w < min_visible) win->x = min_visible - win->w;
+    if (win->y < 0) win->y = 0;
+}
+
 static void draw_window_frame(const window_t *win, bool active)
 {
-    fb_fill_rect(win->x + 6, win->y + 6, win->w, win->h, col_shade);
-
+    fb_fill_rect(win->x + 4, win->y + 4, win->w, win->h, col_shade);
     fb_fill_rect(win->x, win->y, win->w, win->h, col_face);
     fb_rect(win->x, win->y, win->w, win->h, col_black);
 
@@ -98,57 +124,66 @@ static void draw_window_frame(const window_t *win, bool active)
                  win->w - 2 * BORDER, TITLE_H,
                  active ? col_title_on : col_title_off);
 
-    fb_text(win->x + 12, win->y + 8, win->title, col_white, TEXT_SCALE);
+    fb_text(win->x + 8, win->y + (TITLE_H - 8 * SCALE) / 2 + BORDER,
+            win->title, col_white, SCALE);
 
-    /* Close box, drawn but not wired to anything: the taskbar toggles
-     * visibility instead, and a decoration that looks clickable and is not
-     * would be worse than none. */
-    int bx = win->x + win->w - 34;
-    fb_rect(bx, win->y + 8, 18, 16, col_white);
+    /* Close box on the right of the title bar. */
+    int bs = TITLE_H - 10;
+    int bx = win->x + win->w - bs - 8;
+    int by = win->y + 5;
+
+    fb_fill_rect(bx, by, bs, bs, col_face);
+    fb_rect(bx, by, bs, bs, col_black);
+
+    /* An X, drawn as two diagonals. */
+    for (int i = 4; i < bs - 4; i++) {
+        fb_fill_rect(bx + i, by + i, 2, 2, col_black);
+        fb_fill_rect(bx + bs - 1 - i, by + i, 2, 2, col_black);
+    }
+}
+
+static void close_box_rect(const window_t *win, int *bx, int *by, int *bs)
+{
+    *bs = TITLE_H - 10;
+    *bx = win->x + win->w - *bs - 8;
+    *by = win->y + 5;
 }
 
 static void draw_terminal(const window_t *win, bool active)
 {
-    int tx = win->x + BORDER + 6;
-    int ty = win->y + TITLE_H + BORDER + 6;
+    int tx = win->x + BORDER + 4;
+    int ty = win->y + TITLE_H + BORDER + 4;
 
     fb_fill_rect(win->x + BORDER, win->y + TITLE_H + BORDER,
                  win->w - 2 * BORDER, win->h - TITLE_H - 2 * BORDER,
                  col_term_bg);
 
-    for (int row = 0; row < TERM_ROWS; row++)
-        for (int col = 0; col < TERM_COLS; col++) {
+    for (int row = 0; row < term_rows; row++)
+        for (int col = 0; col < term_cols; col++) {
             char c = term_cells[row][col];
             if (c != ' ')
                 fb_char(tx + col * CELL_W, ty + row * CELL_H,
-                        c, col_term_fg, TEXT_SCALE);
+                        c, col_term_fg, TERM_SCALE);
         }
 
     if (active)
-        fb_fill_rect(tx + term_cx * CELL_W, ty + term_cy * CELL_H + CELL_H - 3,
-                     CELL_W, 3, col_term_fg);
+        fb_fill_rect(tx + term_cx * CELL_W,
+                     ty + term_cy * CELL_H + CELL_H - 2,
+                     CELL_W, 2, col_term_fg);
 }
 
-/* Render an unsigned value as text. There is no snprintf here. */
 static void draw_number(int x, int y, uint32_t v, uint32_t colour)
 {
-    char buf[12];
-    int  p = 0;
+    char digits[12], out[12];
+    int  p = 0, q = 0;
 
     if (v == 0)
-        buf[p++] = '0';
-    while (v > 0) {
-        buf[p++] = (char)('0' + (v % 10));
-        v /= 10;
-    }
-
-    char out[12];
-    int  q = 0;
-    while (p > 0)
-        out[q++] = buf[--p];
+        digits[p++] = '0';
+    while (v > 0) { digits[p++] = (char)('0' + (v % 10)); v /= 10; }
+    while (p > 0) out[q++] = digits[--p];
     out[q] = '\0';
 
-    fb_text(x, y, out, colour, TEXT_SCALE);
+    fb_text(x, y, out, colour, SCALE);
 }
 
 static void draw_stats(const window_t *win)
@@ -159,75 +194,104 @@ static void draw_stats(const window_t *win)
     uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
 
     static const char *labels[5] = {
-        "tasks", "uptime s", "heap KB", "switches", "mouse pkts"
+        "tasks", "uptime s", "heap KB", "switches", "mouse"
     };
     uint32_t values[5] = {
         (uint32_t)task_count(), secs, heap.used_bytes / 1024,
         task_switch_count(), mouse_packet_count()
     };
 
-    int tx = win->x + 16;
-    int ty = win->y + TITLE_H + 16;
+    int tx = win->x + 10;
+    int ty = win->y + TITLE_H + 10;
+    int step = CHROME_H + 5;
 
     for (int i = 0; i < 5; i++) {
-        fb_text(tx, ty + i * (CELL_H + 8), labels[i], col_black, TEXT_SCALE);
-        draw_number(tx + 190, ty + i * (CELL_H + 8), values[i], col_title_on);
+        fb_text(tx, ty + i * step, labels[i], col_black, SCALE);
+        draw_number(tx + 10 * CHROME_W, ty + i * step, values[i], col_title_on);
+    }
+}
+
+static void draw_start_menu(void)
+{
+    int mw = 18 * CHROME_W;
+    int mh = 3 * (CHROME_H + 10) + 12;
+    int mx = 4;
+    int my = SCR_H - TASKBAR_H - mh;
+
+    fb_fill_rect(mx + 3, my + 3, mw, mh, col_shade);
+    fb_fill_rect(mx, my, mw, mh, col_face);
+    fb_rect(mx, my, mw, mh, col_black);
+
+    static const char *items[3] = { "Terminal", "System", "Exit to console" };
+
+    for (int i = 0; i < 3; i++) {
+        int iy = my + 6 + i * (CHROME_H + 10);
+        fb_fill_rect(mx + 4, iy, mw - 8, CHROME_H + 6, col_face);
+        fb_text(mx + 10, iy + 3, items[i], col_black, SCALE);
     }
 }
 
 static void draw_taskbar(void)
 {
-    int bar_y = (int)fb_height() - TASKBAR_H;
+    int bar_y = SCR_H - TASKBAR_H;
 
-    fb_fill_rect(0, bar_y, (int)fb_width(), TASKBAR_H, col_bar);
-    fb_fill_rect(0, bar_y, (int)fb_width(), 2, col_edge);
+    fb_fill_rect(0, bar_y, SCR_W, TASKBAR_H, col_bar);
+    fb_fill_rect(0, bar_y, SCR_W, 2, col_accent);
 
-    fb_text(16, bar_y + 16, "MyOS", col_white, TEXT_SCALE);
+    /* Start button. */
+    int sw = 7 * CHROME_W;
+    fb_fill_rect(6, bar_y + 5, sw, TASKBAR_H - 10,
+                 start_menu_open ? col_btn_on : col_btn);
+    fb_rect(6, bar_y + 5, sw, TASKBAR_H - 10, col_black);
+    fb_text(14, bar_y + (TASKBAR_H - 8 * SCALE) / 2, "Start", col_white, SCALE);
 
-    /* One button per window, highlighted while that window is visible. */
-    for (int i = 0; i < window_count; i++) {
-        int bx = 140 + i * 220;
+    /* One button per window. Width is divided from the space that is actually
+     * left, rather than assumed, so the labels never run into the clock. */
+    int first = sw + 16;
+    int clock_w = 9 * CHROME_W;
+    int avail = SCR_W - first - clock_w - 16;
+    int bw = avail / MAX_WINDOWS;
 
-        fb_fill_rect(bx, bar_y + 8, 200, TASKBAR_H - 16,
-                     windows[i].visible ? col_bar_btn_on : col_bar_btn);
-        fb_rect(bx, bar_y + 8, 200, TASKBAR_H - 16, col_black);
+    if (bw > 18 * CHROME_W) bw = 20 * CELL_W;
 
-        fb_text(bx + 14, bar_y + 16, windows[i].title, col_white, TEXT_SCALE);
+    for (int i = 0; i < window_count && bw > 5 * CHROME_W; i++) {
+        int bx = first + i * (bw + 6);
+
+        fb_fill_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10,
+                     windows[i].visible ? col_btn_on : col_btn);
+        fb_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10, col_black);
+        fb_text(bx + 8, bar_y + (TASKBAR_H - 8 * SCALE) / 2,
+                windows[i].title, col_white, SCALE);
     }
 
-    fb_text((int)fb_width() - 420, bar_y + 16,
-            "ESC returns to console", col_white, TEXT_SCALE);
+    /* Uptime where a clock would be. There is no real-time clock driver, so
+     * showing a wall clock would mean inventing one. */
+    uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
+    int cx = SCR_W - clock_w - 6;
+
+    fb_text(cx, bar_y + (TASKBAR_H - 8 * SCALE) / 2, "up", col_white, SCALE);
+    draw_number(cx + 3 * CHROME_W, bar_y + (TASKBAR_H - 8 * SCALE) / 2,
+                secs, col_white);
 }
 
 static void draw_cursor(void)
 {
     int mx = mouse_x();
     int my = mouse_y();
+    int s  = SCALE;
 
-    /* Scaled up: an 8-pixel arrow is invisible at this resolution. */
-    const int s = 2;
-
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 14; i++) {
         fb_fill_rect(mx, my + i * s, s, s, col_black);
-        if (i > 0 && i < 13)
-            fb_fill_rect(mx + s, my + i * s, s, s, col_white);
-        if (i > 1 && i < 11)
-            fb_fill_rect(mx + 2 * s, my + i * s, s, s, col_white);
-        if (i > 2 && i < 9)
-            fb_fill_rect(mx + 3 * s, my + i * s, s, s, col_white);
+        if (i > 0 && i < 11) fb_fill_rect(mx + s, my + i * s, s, s, col_white);
+        if (i > 1 && i < 9)  fb_fill_rect(mx + 2 * s, my + i * s, s, s, col_white);
     }
 
-    for (int i = 0; i < 8; i++)
-        fb_fill_rect(mx + (4 + i) * s, my + (5 + i) * s, s, s,
-                     i < 5 ? col_white : col_black);
+    for (int i = 0; i < 7; i++)
+        fb_fill_rect(mx + (3 + i) * s, my + (4 + i) * s, s, s,
+                     i < 4 ? col_white : col_black);
 }
 
 /* ---- input --------------------------------------------------------------- */
-
-static bool in_rect(int px, int py, int x, int y, int w, int h)
-{
-    return px >= x && px < x + w && py >= y && py < y + h;
-}
 
 static void raise_window(int index)
 {
@@ -240,15 +304,61 @@ static void raise_window(int index)
     windows[window_count - 1] = tmp;
 }
 
+static void show_window(window_kind_t kind)
+{
+    for (int i = 0; i < window_count; i++) {
+        if (windows[i].kind != kind)
+            continue;
+
+        windows[i].visible = true;
+        raise_window(i);
+        focused = window_count - 1;
+        return;
+    }
+}
+
+/* Returns false if the GUI should exit. */
 static bool handle_click(int mx, int my)
 {
-    int bar_y = (int)fb_height() - TASKBAR_H;
+    int bar_y = SCR_H - TASKBAR_H;
 
-    /* Taskbar first: it sits above everything. */
+    if (start_menu_open) {
+        int mw = 18 * CHROME_W;
+        int mh = 3 * (CHROME_H + 10) + 12;
+        int sx = 4;
+        int sy = SCR_H - TASKBAR_H - mh;
+
+        if (in_rect(mx, my, sx, sy, mw, mh)) {
+            int item = (my - sy - 6) / (CELL_H + 10);
+            start_menu_open = false;
+
+            if (item == 0) show_window(WIN_TERMINAL);
+            else if (item == 1) show_window(WIN_STATS);
+            else if (item == 2) return false;
+
+            return true;
+        }
+
+        start_menu_open = false;   /* clicked away: dismiss */
+    }
+
     if (my >= bar_y) {
+        int sw = 7 * CHROME_W;
+
+        if (in_rect(mx, my, 6, bar_y + 5, sw, TASKBAR_H - 10)) {
+            start_menu_open = !start_menu_open;
+            return true;
+        }
+
+        int first = sw + 16;
+        int clock_w = 9 * CHROME_W;
+        int avail = SCR_W - first - clock_w - 16;
+        int bw = avail / MAX_WINDOWS;
+        if (bw > 18 * CHROME_W) bw = 20 * CELL_W;
+
         for (int i = 0; i < window_count; i++) {
-            int bx = 140 + i * 220;
-            if (in_rect(mx, my, bx, bar_y + 8, 200, TASKBAR_H - 16)) {
+            int bx = first + i * (bw + 6);
+            if (in_rect(mx, my, bx, bar_y + 5, bw - 6, TASKBAR_H - 10)) {
                 windows[i].visible = !windows[i].visible;
                 if (windows[i].visible) {
                     raise_window(i);
@@ -257,6 +367,7 @@ static bool handle_click(int mx, int my)
                 return true;
             }
         }
+
         return true;
     }
 
@@ -265,6 +376,14 @@ static bool handle_click(int mx, int my)
             continue;
         if (!in_rect(mx, my, windows[i].x, windows[i].y, windows[i].w, windows[i].h))
             continue;
+
+        int bx, by, bs;
+        close_box_rect(&windows[i], &bx, &by, &bs);
+
+        if (in_rect(mx, my, bx, by, bs, bs)) {
+            windows[i].visible = false;
+            return true;
+        }
 
         bool on_title = in_rect(mx, my, windows[i].x, windows[i].y,
                                 windows[i].w, TITLE_H + BORDER);
@@ -295,42 +414,88 @@ void gui_run(void)
         return;
     }
 
-    col_desktop    = fb_rgb(32, 60, 96);
-    col_face       = fb_rgb(200, 200, 205);
-    col_edge       = fb_rgb(245, 245, 250);
-    col_shade      = fb_rgb(18, 32, 52);
-    col_title_on   = fb_rgb(28, 88, 168);
-    col_title_off  = fb_rgb(120, 120, 130);
-    col_term_bg    = fb_rgb(14, 16, 24);
-    col_term_fg    = fb_rgb(120, 230, 140);
-    col_bar        = fb_rgb(38, 44, 58);
-    col_bar_btn    = fb_rgb(60, 68, 86);
-    col_bar_btn_on = fb_rgb(28, 88, 168);
-    col_white      = fb_rgb(255, 255, 255);
-    col_black      = fb_rgb(0, 0, 0);
+    SCR_W = (int)fb_width();
+    SCR_H = (int)fb_height();
 
-    int W = (int)fb_width();
-    int H = (int)fb_height();
+    /* Small screens get an unscaled font, or almost nothing fits. */
+    SCALE = (SCR_W >= 1000) ? 2 : 1;
+
+    /* The terminal uses a smaller font than the window chrome.
+     *
+     * Every command in the shell formats its output for an 80-column screen —
+     * the task table, the heap report, the self-test. At the chrome scale a
+     * window occupying two thirds of a 1024-wide display is only 41 columns,
+     * so those tables wrapped mid-row and became unreadable. Halving the font
+     * for terminal content buys back the columns the output was written for. */
+    TERM_SCALE = (SCR_W >= 1600) ? 2 : 1;
+
+    CELL_W    = 8 * TERM_SCALE;
+    CELL_H    = 8 * TERM_SCALE;
+    CHROME_W  = 8 * SCALE;
+    CHROME_H  = 8 * SCALE;
+    TASKBAR_H = 14 * SCALE + 12;
+    TITLE_H   = 10 * SCALE + 8;
+
+    col_desktop   = fb_rgb(30, 58, 92);
+    col_face      = fb_rgb(206, 206, 210);
+    col_edge      = fb_rgb(248, 248, 250);
+    col_shade     = fb_rgb(16, 30, 48);
+    col_title_on  = fb_rgb(26, 86, 166);
+    col_title_off = fb_rgb(122, 122, 132);
+    col_term_bg   = fb_rgb(12, 14, 22);
+    col_term_fg   = fb_rgb(126, 232, 146);
+    col_bar       = fb_rgb(36, 42, 56);
+    col_btn       = fb_rgb(58, 66, 84);
+    col_btn_on    = fb_rgb(26, 86, 166);
+    col_accent    = fb_rgb(90, 150, 220);
+    col_white     = fb_rgb(255, 255, 255);
+    col_black     = fb_rgb(0, 0, 0);
+
+    /* The stats window is sized first, from the longest label it has to show,
+     * and the terminal then takes the width that is left. Sizing the terminal
+     * first as a fraction of the screen left the two overlapping on startup:
+     * correct behaviour from the window manager, but a poor first impression. */
+    int sw = 17 * CHROME_W;
+    int sh = 5 * (CHROME_H + 5) + TITLE_H + 24;
+
+    int tw = SCR_W - sw - 34;
+    int th = SCR_H - TASKBAR_H - 60;
+
+    if (tw < 40 * CELL_W)
+        tw = SCR_W - 20;        /* too narrow to sit alongside; use full width */
+
+    term_cols = (tw - 2 * BORDER - 8) / CELL_W;
+    term_rows = (th - TITLE_H - 2 * BORDER - 8) / CELL_H;
+
+    if (term_cols > MAX_COLS) term_cols = MAX_COLS;
+    if (term_rows > MAX_ROWS) term_rows = MAX_ROWS;
+    if (term_cols < 20) term_cols = 20;
+    if (term_rows < 6)  term_rows = 6;
+
+    tw = term_cols * CELL_W + 2 * BORDER + 8;
+    th = term_rows * CELL_H + TITLE_H + 2 * BORDER + 8;
 
     term_clear();
 
     window_count = 2;
-    windows[0] = (window_t){ W - 460, 90, 400, 260,
+    windows[0] = (window_t){ SCR_W - sw - 12, 30, sw, sh,
                              "System", WIN_STATS, true };
-    windows[1] = (window_t){ 80, 120,
-                             TERM_COLS * CELL_W + 2 * BORDER + 12,
-                             TERM_ROWS * CELL_H + TITLE_H + 2 * BORDER + 12,
+    windows[1] = (window_t){ 10, 40, tw, th,
                              "Terminal", WIN_TERMINAL, true };
     focused = 1;
 
-    mouse_set_bounds(W, H);
+    for (int i = 0; i < window_count; i++)
+        clamp_window(&windows[i]);
 
-    /* Shell output now lands in the terminal window rather than the console. */
+    start_menu_open = false;
+    dragging = -1;
+
+    mouse_set_bounds(SCR_W, SCR_H);
     console_set_sink(term_putc);
 
-    kprintf("MyOS graphical mode - %dx%d\n", W, H);
-    kprintf("the taskbar toggles windows; drag by the title bar.\n");
-    kprintf("try: help, tasks, meminfo, race off 5\n\n> ");
+    kprintf("MyOS graphical mode - %dx%d\n", SCR_W, SCR_H);
+    kprintf("Start menu opens windows. Drag by the title bar.\n");
+    kprintf("try: help, tasks, meminfo\n\n> ");
 
     bool     dirty = true;
     int      last_mx = mouse_x(), last_my = mouse_y();
@@ -342,9 +507,6 @@ void gui_run(void)
 
             if (c == 27) {
                 console_set_sink(0);
-
-                /* Repaint the text console from its own stored contents; it
-                 * was never touched while the GUI was up. */
                 fbcon_clear();
                 return;
             }
@@ -365,13 +527,20 @@ void gui_run(void)
             dirty = true;
         }
 
-        if (mouse_take_click(MOUSE_LEFT))
-            dirty = handle_click(mouse_x(), mouse_y()) || dirty;
+        if (mouse_take_click(MOUSE_LEFT)) {
+            if (!handle_click(mouse_x(), mouse_y())) {
+                console_set_sink(0);
+                fbcon_clear();
+                return;
+            }
+            dirty = true;
+        }
 
         if (dragging >= 0) {
             if (mouse_buttons() & MOUSE_LEFT) {
                 windows[dragging].x = mouse_x() - drag_dx;
                 windows[dragging].y = mouse_y() - drag_dy;
+                clamp_window(&windows[dragging]);
                 dirty = true;
             } else {
                 dragging = -1;
@@ -395,10 +564,9 @@ void gui_run(void)
         dirty = false;
         last_frame = pit_ticks();
 
-        fb_fill_rect(0, 0, W, H - TASKBAR_H, col_desktop);
-        fb_text(24, 24, "MyOS", col_white, 3);
-        fb_text(24, 64, "bare metal x86 - no operating system underneath",
-                col_edge, TEXT_SCALE);
+        fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
+        fb_text(10, 8, "MyOS", col_white, SCALE);
+        fb_text(10 + 6 * CHROME_W, 8, "bare metal x86", col_accent, SCALE);
 
         for (int i = 0; i < window_count; i++) {
             if (!windows[i].visible)
@@ -413,8 +581,11 @@ void gui_run(void)
         }
 
         draw_taskbar();
-        draw_cursor();
 
+        if (start_menu_open)
+            draw_start_menu();
+
+        draw_cursor();
         fb_present();
 
         task_yield();

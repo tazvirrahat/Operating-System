@@ -36,9 +36,19 @@ align 4
     ; Requested mode. GRUB treats this as a preference, not a demand: it picks
     ; the closest mode the hardware actually offers and reports back what it
     ; chose, so the kernel must read the result rather than assume it got this.
+    ; 1024x768 rather than something larger, on purpose.
+    ;
+    ; The firmware only offers modes that fit in the adapter's video memory,
+    ; and the legacy VBE mode list a virtual machine exposes before any driver
+    ; loads is short. Asking for 1920x1080 on a VM configured with 4 MB of
+    ; video RAM matched nothing and fell all the way back to 640x480.
+    ;
+    ; It is also the honest choice for a software renderer: at 32 bits per
+    ; pixel a 1024x768 frame is 3 MB against 8.3 MB for 1080p, and every one
+    ; of those bytes is moved by the CPU.
     dd 0                    ; mode_type: 0 = linear graphics, 1 = text
-    dd 1920                 ; width
-    dd 1080                 ; height
+    dd 1024                 ; width
+    dd 768                  ; height
     dd 32                   ; bits per pixel
 
 ; ---------------------------------------------------------------------------
