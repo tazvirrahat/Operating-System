@@ -8,6 +8,8 @@
 > **Companion document:** [`PROJECT_PLAN.md`](PROJECT_PLAN.md) — the development plan. This document is the report: what was built, what went wrong, and what was done about it.
 >
 > **Note on §3.** The challenges below are real: every one was encountered while building this kernel, and each is traceable to the commit that fixed it. Before submitting, read through them and make sure you can explain each fix in your own words — a marker is entitled to ask, and these are the parts of the project most worth understanding.
+>
+> **[`CHALLENGES.md`](CHALLENGES.md)** contains the same challenges as a standalone document using only the four STAR headings, which is the format the course brief asks for. If both are submitted, keep them in step — §3 here and the numbered sections there describe the same fourteen problems.
 
 ---
 
@@ -296,7 +298,23 @@ Two things make this worth recording. First, the bug was found by a feature rath
 
 ---
 
-### 3.14 Toolchain and workflow
+### 3.14 A polling loop that could hang the kernel outside the emulator
+
+**Situation.** Preparing to run the kernel in VMware rather than only in QEMU, we reviewed the code for assumptions that hold in an emulator but not elsewhere. The serial driver waited in an unbounded loop for the UART to report its transmit register free.
+
+**Task.** The driver assumed a serial port exists, because QEMU always provides one. Every message the kernel prints passes through that function.
+
+**Action.** VMware gives a guest no serial port unless one is configured, and most modern PCs have none at all. Reading an absent port returns whatever the bus floats to — commonly `0xFF`, which coincidentally has the ready bit set, but `0x00` on some chipsets, which reads as permanently busy. In that case the loop never exits and the kernel hangs inside its first `kprintf`, before anything reaches the screen: a black display with no diagnostic, the hardest possible symptom to work backwards from.
+
+We added a UART loopback probe at startup — put the chip in loopback, write a byte, check the same byte returns — and bounded the transmit wait. A missing port now disables serial output rather than blocking on it.
+
+**Result.** The kernel boots identically with and without a UART, verified both ways under QEMU: 22 self-tests pass and the screen output is identical. Dropping debug output when the hardware is absent is survivable; hanging to deliver it is not.
+
+The method is worth noting as much as the fix. Rather than testing the same configuration again, we asked what QEMU was being *forgiving* about — which is where the defects that only appear on real hardware live.
+
+---
+
+### 3.15 Toolchain and workflow
 
 **Situation.** The project began with no command-line experience on the team: no terminal use, no compiling from a shell, no Git CLI, and no debugger. Bare-metal development requires all of these and provides none of the feedback an IDE gives.
 
@@ -308,7 +326,7 @@ Two things make this worth recording. First, the bug was found by a feature rath
 
 ---
 
-### 3.15 *(Add anything else you hit)*
+### 3.16 *(Add anything else you hit)*
 
 **Situation.**
 **Task.**
