@@ -17,6 +17,8 @@
 #define KEY_DOWN  0x12
 #define KEY_LEFT  0x13
 #define KEY_RIGHT 0x14
+#define KEY_PGUP  0x15
+#define KEY_PGDN  0x16
 
 void kbd_init(void);
 

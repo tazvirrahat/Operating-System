@@ -94,6 +94,8 @@ static void keyboard_isr(registers_t *regs)
         case 0x50: buffer_push(KEY_DOWN);  break;
         case 0x4B: buffer_push(KEY_LEFT);  break;
         case 0x4D: buffer_push(KEY_RIGHT); break;
+        case 0x49: buffer_push(KEY_PGUP);  break;
+        case 0x51: buffer_push(KEY_PGDN);  break;
         default:   break;   /* other extended keys are not used */
         }
 

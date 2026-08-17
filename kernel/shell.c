@@ -551,6 +551,17 @@ void shell_run(void)
             continue;
         }
 
+        /* Scrollback. A screenful at a time, like a terminal. */
+        if (c == KEY_PGUP) {
+            vga_scroll_back(20);
+            continue;
+        }
+
+        if (c == KEY_PGDN) {
+            vga_scroll_back(-20);
+            continue;
+        }
+
         /* Left and right are decoded by the driver but the line editor only
          * supports appending, so they are ignored rather than inserted as
          * stray control characters. */
