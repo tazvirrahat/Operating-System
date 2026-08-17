@@ -1,0 +1,67 @@
+#!/usr/bin/vmware
+# VMware configuration for booting MyOS from the built ISO.
+#
+# Usage
+#   1. Build the ISO first:            .\dev.ps1
+#      This produces build\myos.iso
+#   2. Open this file with VMware Workstation Player ("Open a Virtual Machine")
+#   3. Power on. It boots straight from the ISO -- there is no virtual disk,
+#      so nothing can be written and nothing can be damaged.
+#
+# The relative path below assumes this file stays in the vmware\ folder of the
+# repository, with the ISO at ..\build\myos.iso.
+
+.encoding = "UTF-8"
+config.version = "8"
+virtualHW.version = "19"
+
+displayName = "MyOS - bare metal x86 kernel"
+guestOS = "other"
+
+# 128 MB is plenty: the kernel maps what the multiboot memory map reports and
+# uses a 1 MB heap.
+memsize = "128"
+numvcpus = "1"
+
+# --- boot media -----------------------------------------------------------
+# Boot from the ISO. No hard disk is attached at all, which is what makes this
+# safe to run: the guest has no writable storage to touch.
+ide1:0.present = "TRUE"
+ide1:0.deviceType = "cdrom-image"
+ide1:0.fileName = "..\build\myos.iso"
+ide1:0.startConnected = "TRUE"
+
+bios.bootDelay = "2000"
+bios.forceSetupOnce = "FALSE"
+
+# --- serial port ----------------------------------------------------------
+# The kernel mirrors all output to COM1. Capturing it to a file gives a full
+# text transcript of the session alongside the video, which is useful for the
+# report and survives anything that goes wrong on screen.
+#
+# Without this the kernel still runs: it probes for a UART at startup and
+# silently skips serial output when none answers.
+serial0.present = "TRUE"
+serial0.fileType = "file"
+serial0.fileName = "myos-serial.log"
+serial0.startConnected = "TRUE"
+serial0.tryNoRxLoss = "FALSE"
+
+# --- input ----------------------------------------------------------------
+# The keyboard driver speaks the legacy PS/2 protocol, which VMware emulates
+# regardless of what the host keyboard actually is.
+usb.present = "FALSE"
+ehci.present = "FALSE"
+
+# --- things this kernel does not have drivers for -------------------------
+# Left out deliberately rather than by omission: no network stack, no sound,
+# no disk driver, no graphics beyond VGA text mode.
+ethernet0.present = "FALSE"
+sound.present = "FALSE"
+floppy0.present = "FALSE"
+
+svga.autodetect = "FALSE"
+svga.vramSize = "4194304"
+
+tools.syncTime = "FALSE"
+msg.autoAnswer = "TRUE"

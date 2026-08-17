@@ -32,6 +32,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     netpbm \
     # assembles a sequence of screendumps into the animated demo GIF
     imagemagick \
+    # a second, independent emulator. QEMU is forgiving; Bochs is strict and
+    # shares no code with it, so booting under both is real evidence that the
+    # kernel does not depend on one emulator's quirks -- which is what makes
+    # it plausible on VMware or real hardware.
+    bochs bochsbios vgabios \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /os

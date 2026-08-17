@@ -180,3 +180,11 @@ Roughly 4,700 lines across 44 files.
 - [OSDev Wiki](https://wiki.osdev.org)
 - Intel Software Developer's Manual, Volume 3 — protected mode, descriptors, exceptions
 - Multiboot Specification 0.6.96
+
+## Running it in VMware
+
+A ready-made VMware configuration is in [`vmware/MyOS.vmx`](vmware/MyOS.vmx). Build the ISO first, then open that file in VMware Workstation Player and power on.
+
+There is **no virtual disk attached**, so the guest has no writable storage — it boots from the ISO and runs entirely in RAM. Nothing on the host can be modified.
+
+The kernel probes for a serial port at startup and skips serial output if none answers, so it boots correctly whether or not one is configured. Verified both ways under QEMU: 22 self-tests pass with a serial port and with `-serial none`.
