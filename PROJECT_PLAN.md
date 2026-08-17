@@ -2,7 +2,13 @@
 
 **Course:** Operating Systems
 **Deadline:** 22 August 2026
-**Plan revised:** 12 August 2026 — architecture changed from ARM to x86 (see §1.1)
+**Plan revised:** 17 August 2026 — architecture changed from ARM to x86 (see §1.1)
+
+> **Note on §5.** The day-by-day schedule below was written expecting the work
+> to be spread across ten sessions. It was not — implementation ran in a single
+> stretch, so the dates in that table are fiction. The *gates* in it are real
+> and were honoured in order (text on screen before interrupts, interrupts
+> before scheduling), which is the part worth keeping.
 **Target:** A bare-metal 32-bit x86 kernel that boots under GRUB, preempts tasks via hardware timer interrupts, manages its own heap, handles keyboard input, and runs an interactive shell with a live kernel monitor — developed in QEMU, with a stretch goal of booting on real hardware (AMD Ryzen 5 5600G).
 
 > ## Status: Tier 1, Tier 2 and Tier 3 complete
