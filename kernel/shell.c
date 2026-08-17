@@ -9,6 +9,8 @@
 #include "demos.h"
 #include "monitor.h"
 #include "selftest.h"
+#include "gui.h"
+#include "mouse.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -293,6 +295,20 @@ static void cmd_user(int argc, char **argv)
     user_mode_demo(use_syscall);
 }
 
+static void cmd_gui(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    if (!mouse_present())
+        kprintf("\nno ps/2 mouse detected - the gui will run, but without a cursor.\n");
+
+    kprintf("\nswitching to graphics mode. press ESC to come back.\n");
+
+    gui_run();
+
+    kprintf("\nback in text mode.\n\n");
+}
+
 static void cmd_top(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -372,6 +388,7 @@ static const command_t commands[] = {
     { "fault",    "fault <kind>",     "raise a real CPU exception in a task",      cmd_fault    },
     { "user",     "user [--syscall]", "run a task in ring 3 (privilege demo)",     cmd_user     },
     { "tasks",    "tasks",            "list tasks and their CPU time",             cmd_tasks    },
+    { "gui",      "gui",              "graphical mode: windows, mouse, terminal",  cmd_gui      },
     { "top",      "top",              "live kernel monitor",                       cmd_top      },
     { "meminfo",  "meminfo",          "heap usage and block list state",           cmd_meminfo  },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },
@@ -403,7 +420,7 @@ static int tokenize(char *line, char **argv)
     return argc;
 }
 
-static void dispatch(char *line)
+void shell_dispatch(char *line)
 {
     char *argv[ARGS_MAX];
     int argc = tokenize(line, argv);
@@ -511,7 +528,7 @@ void shell_run(void)
             line[len] = '\0';
 
             history_add(line);
-            dispatch(line);
+            shell_dispatch(line);
 
             len = 0;
             browsing = 0;

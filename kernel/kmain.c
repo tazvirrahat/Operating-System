@@ -13,6 +13,7 @@
 #include "pic.h"
 #include "pit.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "heap.h"
 #include "paging.h"
 #include "task.h"
@@ -60,6 +61,7 @@ void kmain(uint32_t magic, uint32_t *mb_info)
     pic_init();
     pit_init(100);
     kbd_init();
+    mouse_init();   /* same 8042 controller as the keyboard, on IRQ 12 */
 
     /* Paging goes after the IDT so that a page fault has somewhere to land,
      * and before the heap so that heap memory is mapped from the start. */

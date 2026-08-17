@@ -24,6 +24,19 @@ void kputs(const char *s);
  * terminal is the only thing on that end that understands one. */
 void console_home(void);
 
+/* Redirect character output.
+ *
+ * With a sink installed, kputc sends characters there instead of to the VGA
+ * text buffer — which does not exist while the display is in graphics mode.
+ * This is how the GUI's terminal window receives shell output without the
+ * shell knowing anything about windows. Serial output continues regardless,
+ * so the transcript is unbroken across the switch.
+ *
+ * Pass NULL to restore normal text-mode output.
+ */
+typedef void (*console_sink_t)(char c);
+void console_set_sink(console_sink_t sink);
+
 /* Print a message, then halt the CPU permanently. Never returns. */
 void panic(const char *fmt, ...) __attribute__((noreturn));
 

@@ -15,6 +15,13 @@ void console_init(void)
     vga_init();
 }
 
+static console_sink_t sink;
+
+void console_set_sink(console_sink_t fn)
+{
+    sink = fn;
+}
+
 void kputc(char c)
 {
     /* A bare newline moves down but not left on a real terminal, so the serial
@@ -23,7 +30,14 @@ void kputc(char c)
         serial_putc('\r');
 
     serial_putc(c);
-    vga_putc(c);
+
+    /* Serial always gets the character; only the visible destination changes.
+     * That means a session is logged identically whether it happened in the
+     * text console or inside a window. */
+    if (sink)
+        sink(c);
+    else
+        vga_putc(c);
 }
 
 void kputs(const char *s)
