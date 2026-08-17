@@ -80,4 +80,9 @@ void fault_spawn(const char *kind, uint32_t addr);
  * Same code, same privilege level, different outcome, decided by hardware. */
 void user_mode_demo(bool use_syscall);
 
+/* True if the most recent ring 3 run reached its exit syscall, as opposed to
+ * being killed on the way. Checking the task count alone cannot tell these
+ * apart, since the task is gone either way. */
+bool user_mode_completed(void);
+
 #endif /* DEMOS_H */

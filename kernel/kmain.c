@@ -20,15 +20,18 @@
 #include "syscall.h"
 #include "shell.h"
 #include "selftest.h"
+#include "multiboot.h"
+#include "fb.h"
+#include "fbcon.h"
 
 #include <stdint.h>
-
-#define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
 
 /* Placed by linker.ld at the end of the kernel image; free memory starts here. */
 extern uint32_t kernel_end;
 
-#define HEAP_SIZE (1024 * 1024)
+/* 32 MB. The framebuffer backbuffer alone is 8.3 MB at 1920x1080x32, which
+ * the original 1 MB heap could not have held. */
+#define HEAP_SIZE (32 * 1024 * 1024)
 
 static void banner(void)
 {
@@ -40,7 +43,7 @@ static void banner(void)
     vga_set_color(VGA_LGREY, VGA_BLACK);
 }
 
-void kmain(uint32_t magic, uint32_t *mb_info)
+void kmain(uint32_t magic, multiboot_info_t *mb)
 {
     console_init();
     banner();
@@ -51,9 +54,10 @@ void kmain(uint32_t magic, uint32_t *mb_info)
 
     kprintf("multiboot        : %08x OK\n", magic);
 
-    if (mb_info && (mb_info[0] & 0x1))
+    if (mb->flags & MB_INFO_MEMORY)
         kprintf("memory           : %u KB low, %u KB high (%u MB total)\n",
-                mb_info[1], mb_info[2], (mb_info[1] + mb_info[2]) / 1024);
+                mb->mem_lower, mb->mem_upper,
+                (mb->mem_lower + mb->mem_upper) / 1024);
 
     gdt_init();
     isr_init();
@@ -64,16 +68,36 @@ void kmain(uint32_t magic, uint32_t *mb_info)
     mouse_init();   /* same 8042 controller as the keyboard, on IRQ 12 */
 
     /* Paging goes after the IDT so that a page fault has somewhere to land,
-     * and before the heap so that heap memory is mapped from the start. */
+     * and before the heap so that heap memory is mapped from the start.
+     * The framebuffer is mapped at the same time: it sits far above RAM, and
+     * writing to it unmapped would fault on the first pixel. */
     uint32_t ram_bytes = 16 * 1024 * 1024;
-    if (mb_info && (mb_info[0] & 0x1))
-        ram_bytes = (mb_info[1] + mb_info[2]) * 1024;
+    if (mb->flags & MB_INFO_MEMORY)
+        ram_bytes = (mb->mem_lower + mb->mem_upper) * 1024;
 
-    paging_init(ram_bytes);
+    uint32_t fb_addr = 0, fb_size = 0;
+    if (mb->flags & MB_INFO_FRAMEBUFFER) {
+        fb_addr = (uint32_t)mb->framebuffer_addr;
+        fb_size = mb->framebuffer_pitch * mb->framebuffer_height;
+    }
+
+    paging_init(ram_bytes, fb_addr, fb_size);
 
     /* Page-align the heap so it never shares a page with kernel data. */
     uint32_t heap_start = ((uint32_t)&kernel_end + 0xFFF) & ~0xFFFU;
     heap_init(heap_start, HEAP_SIZE);
+
+    /* Now that memory is mapped and allocatable, bring up the framebuffer and
+     * move the console onto it. Everything printed before this point went to
+     * the serial port only, because in a graphics mode the VGA text buffer
+     * displays nothing. The serial log therefore holds the complete boot
+     * record even though the screen does not. */
+    if (fb_init(mb)) {
+        fbcon_init();
+        banner();       /* repaint the header now that there is a screen */
+        kprintf("display          : %ux%u framebuffer console, %dx%d characters\n",
+                fb_width(), fb_height(), fbcon_cols(), fbcon_rows());
+    }
 
     task_init();
     syscall_init();

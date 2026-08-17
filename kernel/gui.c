@@ -1,5 +1,6 @@
 #include "gui.h"
-#include "gfx.h"
+#include "fb.h"
+#include "fbcon.h"
 #include "mouse.h"
 #include "keyboard.h"
 #include "console.h"
@@ -12,18 +13,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define TITLE_H     10
-#define BORDER      1
-#define MAX_WINDOWS 3
+/* ---- layout --------------------------------------------------------------
+ *
+ * Everything scales from the framebuffer size reported at boot rather than
+ * being hardcoded, because GRUB gives us the closest mode it can rather than
+ * exactly what was asked for.
+ */
 
-/* What a window contains. Stored explicitly rather than inferred from the
- * array index, because raising a window to the front reorders the array —
- * identifying windows by position would mean the contents swap places the
- * first time one is clicked. */
-typedef enum {
-    WIN_TERMINAL,
-    WIN_STATS,
-} window_kind_t;
+#define TASKBAR_H   48
+#define TITLE_H     32
+#define BORDER      2
+#define TEXT_SCALE  2
+#define CELL_W      (8 * TEXT_SCALE)
+#define CELL_H      (8 * TEXT_SCALE)
+
+#define MAX_WINDOWS 2
+
+typedef enum { WIN_TERMINAL, WIN_STATS } window_kind_t;
 
 typedef struct {
     int           x, y, w, h;
@@ -32,24 +38,21 @@ typedef struct {
     bool          visible;
 } window_t;
 
-/* Drawn back to front, so later entries appear on top. Dragging moves the
- * dragged window to the end of this list. */
 static window_t windows[MAX_WINDOWS];
 static int      window_count;
-static int      focused = -1;
+static int      focused;
 
-static int  dragging = -1;      /* index of the window being dragged */
-static int  drag_dx, drag_dy;   /* grab point within the title bar */
+static int dragging = -1;
+static int drag_dx, drag_dy;
 
-/* ---- terminal window ------------------------------------------------------
- *
- * A character grid that the console writes into. Shell output arrives here
- * because gui_run installs a console sink; the shell itself is unchanged and
- * unaware that its output is landing in a window.
- */
+static uint32_t col_desktop, col_face, col_edge, col_shade;
+static uint32_t col_title_on, col_title_off, col_term_bg, col_term_fg;
+static uint32_t col_bar, col_bar_btn, col_bar_btn_on, col_white, col_black;
 
-#define TERM_COLS 37
-#define TERM_ROWS 11
+/* ---- terminal ------------------------------------------------------------ */
+
+#define TERM_COLS 72
+#define TERM_ROWS 34
 
 static char term_cells[TERM_ROWS][TERM_COLS];
 static int  term_cx, term_cy;
@@ -62,130 +65,138 @@ static void term_clear(void)
 
 static void term_scroll(void)
 {
-    for (int y = 1; y < TERM_ROWS; y++)
-        memcpy(term_cells[y - 1], term_cells[y], TERM_COLS);
-
+    memmove(term_cells[0], term_cells[1], (TERM_ROWS - 1) * TERM_COLS);
     memset(term_cells[TERM_ROWS - 1], ' ', TERM_COLS);
     term_cy = TERM_ROWS - 1;
 }
 
 static void term_putc(char c)
 {
-    if (c == '\n') {
-        term_cx = 0;
-        term_cy++;
-    } else if (c == '\r') {
-        term_cx = 0;
-    } else if (c == '\b') {
-        if (term_cx > 0) {
-            term_cx--;
-            term_cells[term_cy][term_cx] = ' ';
-        }
-    } else if (c == '\t') {
-        term_cx = (term_cx + 4) & ~3;
+    if (c == '\n')      { term_cx = 0; term_cy++; }
+    else if (c == '\r') { term_cx = 0; }
+    else if (c == '\t') { term_cx = (term_cx + 4) & ~3; }
+    else if (c == '\b') {
+        if (term_cx > 0) term_cells[term_cy][--term_cx] = ' ';
     } else if (c >= 32) {
         term_cells[term_cy][term_cx++] = c;
     }
 
-    if (term_cx >= TERM_COLS) {
-        term_cx = 0;
-        term_cy++;
-    }
-
-    if (term_cy >= TERM_ROWS)
-        term_scroll();
+    if (term_cx >= TERM_COLS) { term_cx = 0; term_cy++; }
+    if (term_cy >= TERM_ROWS) term_scroll();
 }
 
-/* ---- drawing -------------------------------------------------------------- */
+/* ---- drawing ------------------------------------------------------------- */
 
-static void draw_window(int index)
+static void draw_window_frame(const window_t *win, bool active)
 {
-    window_t *win = &windows[index];
-    if (!win->visible)
-        return;
+    fb_fill_rect(win->x + 6, win->y + 6, win->w, win->h, col_shade);
 
-    bool active = (index == focused);
+    fb_fill_rect(win->x, win->y, win->w, win->h, col_face);
+    fb_rect(win->x, win->y, win->w, win->h, col_black);
 
-    /* Drop shadow, drawn first so the window sits over it. */
-    gfx_fill_rect(win->x + 3, win->y + 3, win->w, win->h, C_WIN_SHADE);
+    fb_fill_rect(win->x + BORDER, win->y + BORDER,
+                 win->w - 2 * BORDER, TITLE_H,
+                 active ? col_title_on : col_title_off);
 
-    gfx_fill_rect(win->x, win->y, win->w, win->h, C_WIN_FACE);
-    gfx_rect(win->x, win->y, win->w, win->h, C_BLACK);
+    fb_text(win->x + 12, win->y + 8, win->title, col_white, TEXT_SCALE);
 
-    /* Title bar. */
-    gfx_fill_rect(win->x + BORDER, win->y + BORDER,
-                  win->w - 2 * BORDER, TITLE_H,
-                  active ? C_TITLE_ON : C_TITLE_OFF);
-
-    gfx_text(win->x + 4, win->y + 2, win->title, C_WHITE);
-
-    /* A bevel along the top and left, which is most of what makes a flat
-     * rectangle read as a raised surface. */
-    gfx_hline(win->x + 1, win->y + TITLE_H + 1, win->w - 2, C_WIN_EDGE);
+    /* Close box, drawn but not wired to anything: the taskbar toggles
+     * visibility instead, and a decoration that looks clickable and is not
+     * would be worse than none. */
+    int bx = win->x + win->w - 34;
+    fb_rect(bx, win->y + 8, 18, 16, col_white);
 }
 
 static void draw_terminal(const window_t *win, bool active)
 {
-    int tx = win->x + BORDER + 2;
-    int ty = win->y + TITLE_H + 4;
+    int tx = win->x + BORDER + 6;
+    int ty = win->y + TITLE_H + BORDER + 6;
 
-    gfx_fill_rect(win->x + BORDER + 1, win->y + TITLE_H + 3,
-                  win->w - 2 * BORDER - 2, win->h - TITLE_H - BORDER - 4,
-                  C_TERM_BG);
+    fb_fill_rect(win->x + BORDER, win->y + TITLE_H + BORDER,
+                 win->w - 2 * BORDER, win->h - TITLE_H - 2 * BORDER,
+                 col_term_bg);
 
-    for (int row = 0; row < TERM_ROWS; row++) {
+    for (int row = 0; row < TERM_ROWS; row++)
         for (int col = 0; col < TERM_COLS; col++) {
             char c = term_cells[row][col];
             if (c != ' ')
-                gfx_char(tx + col * GLYPH_W, ty + row * GLYPH_H, c, C_LGREEN);
+                fb_char(tx + col * CELL_W, ty + row * CELL_H,
+                        c, col_term_fg, TEXT_SCALE);
         }
-    }
 
-    /* Block cursor, only while this window has focus. */
     if (active)
-        gfx_fill_rect(tx + term_cx * GLYPH_W, ty + term_cy * GLYPH_H + 7,
-                      GLYPH_W, 1, C_LGREEN);
+        fb_fill_rect(tx + term_cx * CELL_W, ty + term_cy * CELL_H + CELL_H - 3,
+                     CELL_W, 3, col_term_fg);
 }
 
-static void draw_stats_window(const window_t *win)
+/* Render an unsigned value as text. There is no snprintf here. */
+static void draw_number(int x, int y, uint32_t v, uint32_t colour)
+{
+    char buf[12];
+    int  p = 0;
+
+    if (v == 0)
+        buf[p++] = '0';
+    while (v > 0) {
+        buf[p++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+
+    char out[12];
+    int  q = 0;
+    while (p > 0)
+        out[q++] = buf[--p];
+    out[q] = '\0';
+
+    fb_text(x, y, out, colour, TEXT_SCALE);
+}
+
+static void draw_stats(const window_t *win)
 {
     heap_stats_t heap;
     heap_get_stats(&heap);
 
     uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
 
-    int tx = win->x + 5;
-    int ty = win->y + TITLE_H + 5;
+    static const char *labels[5] = {
+        "tasks", "uptime s", "heap KB", "switches", "mouse pkts"
+    };
+    uint32_t values[5] = {
+        (uint32_t)task_count(), secs, heap.used_bytes / 1024,
+        task_switch_count(), mouse_packet_count()
+    };
 
-    char line[40];
+    int tx = win->x + 16;
+    int ty = win->y + TITLE_H + 16;
 
-    /* No snprintf here, so the numbers are formatted by hand. */
-    const char *labels[4] = { "tasks:", "uptime:", "heap KB:", "switches:" };
-    uint32_t    values[4] = { (uint32_t)task_count(), secs,
-                              heap.used_bytes / 1024, task_switch_count() };
-
-    for (int i = 0; i < 4; i++) {
-        gfx_text(tx, ty + i * (GLYPH_H + 2), labels[i], C_BLACK);
-
-        /* Render the value right of the label. */
-        uint32_t v = values[i];
-        int      p = 0;
-        char     digits[12];
-
-        if (v == 0)
-            digits[p++] = '0';
-        while (v > 0) {
-            digits[p++] = (char)('0' + (v % 10));
-            v /= 10;
-        }
-
-        int q = 0;
-        while (p > 0)
-            line[q++] = digits[--p];
-        line[q] = '\0';
-
-        gfx_text(tx + 72, ty + i * (GLYPH_H + 2), line, C_BLUE);
+    for (int i = 0; i < 5; i++) {
+        fb_text(tx, ty + i * (CELL_H + 8), labels[i], col_black, TEXT_SCALE);
+        draw_number(tx + 190, ty + i * (CELL_H + 8), values[i], col_title_on);
     }
+}
+
+static void draw_taskbar(void)
+{
+    int bar_y = (int)fb_height() - TASKBAR_H;
+
+    fb_fill_rect(0, bar_y, (int)fb_width(), TASKBAR_H, col_bar);
+    fb_fill_rect(0, bar_y, (int)fb_width(), 2, col_edge);
+
+    fb_text(16, bar_y + 16, "MyOS", col_white, TEXT_SCALE);
+
+    /* One button per window, highlighted while that window is visible. */
+    for (int i = 0; i < window_count; i++) {
+        int bx = 140 + i * 220;
+
+        fb_fill_rect(bx, bar_y + 8, 200, TASKBAR_H - 16,
+                     windows[i].visible ? col_bar_btn_on : col_bar_btn);
+        fb_rect(bx, bar_y + 8, 200, TASKBAR_H - 16, col_black);
+
+        fb_text(bx + 14, bar_y + 16, windows[i].title, col_white, TEXT_SCALE);
+    }
+
+    fb_text((int)fb_width() - 420, bar_y + 16,
+            "ESC returns to console", col_white, TEXT_SCALE);
 }
 
 static void draw_cursor(void)
@@ -193,45 +204,29 @@ static void draw_cursor(void)
     int mx = mouse_x();
     int my = mouse_y();
 
-    /* A simple arrow: a black outline with a white interior, so it stays
-     * visible over both the light window face and the dark desktop. */
-    for (int i = 0; i < 10; i++) {
-        gfx_pixel(mx, my + i, C_BLACK);
-        if (i > 0 && i < 8)
-            gfx_pixel(mx + 1, my + i, C_WHITE);
-        if (i > 1 && i < 7)
-            gfx_pixel(mx + 2, my + i, C_WHITE);
+    /* Scaled up: an 8-pixel arrow is invisible at this resolution. */
+    const int s = 2;
+
+    for (int i = 0; i < 16; i++) {
+        fb_fill_rect(mx, my + i * s, s, s, col_black);
+        if (i > 0 && i < 13)
+            fb_fill_rect(mx + s, my + i * s, s, s, col_white);
+        if (i > 1 && i < 11)
+            fb_fill_rect(mx + 2 * s, my + i * s, s, s, col_white);
+        if (i > 2 && i < 9)
+            fb_fill_rect(mx + 3 * s, my + i * s, s, s, col_white);
     }
 
-    for (int i = 0; i < 6; i++)
-        gfx_pixel(mx + 3 + i, my + 3 + i, i < 4 ? C_WHITE : C_BLACK);
-
-    gfx_pixel(mx + 1, my + 8, C_BLACK);
-    gfx_pixel(mx + 2, my + 7, C_BLACK);
+    for (int i = 0; i < 8; i++)
+        fb_fill_rect(mx + (4 + i) * s, my + (5 + i) * s, s, s,
+                     i < 5 ? col_white : col_black);
 }
 
-static void draw_desktop(void)
+/* ---- input --------------------------------------------------------------- */
+
+static bool in_rect(int px, int py, int x, int y, int w, int h)
 {
-    gfx_clear(C_DESKTOP);
-
-    gfx_text(4, 4, "MyOS", C_WHITE);
-    gfx_text(4, 14, "bare metal x86", C_LCYAN);
-
-    gfx_text(4, GFX_HEIGHT - 10, "ESC exits to text mode", C_LGREY);
-}
-
-/* ---- input ---------------------------------------------------------------- */
-
-static bool point_in_title(const window_t *win, int x, int y)
-{
-    return x >= win->x && x < win->x + win->w
-        && y >= win->y && y < win->y + TITLE_H + BORDER;
-}
-
-static bool point_in_window(const window_t *win, int x, int y)
-{
-    return x >= win->x && x < win->x + win->w
-        && y >= win->y && y < win->y + win->h;
+    return px >= x && px < x + w && py >= y && py < y + h;
 }
 
 static void raise_window(int index)
@@ -240,86 +235,117 @@ static void raise_window(int index)
         return;
 
     window_t tmp = windows[index];
-
     for (int i = index; i < window_count - 1; i++)
         windows[i] = windows[i + 1];
-
     windows[window_count - 1] = tmp;
 }
 
-static void handle_mouse(void)
+static bool handle_click(int mx, int my)
 {
-    int mx = mouse_x();
-    int my = mouse_y();
+    int bar_y = (int)fb_height() - TASKBAR_H;
 
-    if (mouse_take_click(MOUSE_LEFT)) {
-        /* Front to back, so the topmost window under the pointer wins. */
-        for (int i = window_count - 1; i >= 0; i--) {
-            if (!windows[i].visible || !point_in_window(&windows[i], mx, my))
-                continue;
-
-            bool on_title = point_in_title(&windows[i], mx, my);
-
-            /* Raising reorders the array, so the index this window is about
-             * to live at is the last one. Capturing focus and the drag target
-             * before raising would leave both pointing at whatever slid down
-             * into the old position. */
-            raise_window(i);
-            focused = window_count - 1;
-
-            if (on_title) {
-                dragging = window_count - 1;
-                drag_dx  = mx - windows[dragging].x;
-                drag_dy  = my - windows[dragging].y;
+    /* Taskbar first: it sits above everything. */
+    if (my >= bar_y) {
+        for (int i = 0; i < window_count; i++) {
+            int bx = 140 + i * 220;
+            if (in_rect(mx, my, bx, bar_y + 8, 200, TASKBAR_H - 16)) {
+                windows[i].visible = !windows[i].visible;
+                if (windows[i].visible) {
+                    raise_window(i);
+                    focused = window_count - 1;
+                }
+                return true;
             }
-            break;
         }
+        return true;
     }
 
-    if (dragging >= 0) {
-        if (mouse_buttons() & MOUSE_LEFT) {
-            windows[dragging].x = mx - drag_dx;
-            windows[dragging].y = my - drag_dy;
-        } else {
-            dragging = -1;
+    for (int i = window_count - 1; i >= 0; i--) {
+        if (!windows[i].visible)
+            continue;
+        if (!in_rect(mx, my, windows[i].x, windows[i].y, windows[i].w, windows[i].h))
+            continue;
+
+        bool on_title = in_rect(mx, my, windows[i].x, windows[i].y,
+                                windows[i].w, TITLE_H + BORDER);
+
+        raise_window(i);
+        focused = window_count - 1;
+
+        if (on_title) {
+            dragging = focused;
+            drag_dx  = mx - windows[dragging].x;
+            drag_dy  = my - windows[dragging].y;
         }
+        return true;
     }
+
+    return true;
 }
 
-/* ---- entry point ---------------------------------------------------------- */
+/* ---- entry point --------------------------------------------------------- */
 
 void gui_run(void)
 {
-    char line[80];
+    char line[128];
     int  len = 0;
+
+    if (!fb_available()) {
+        kprintf("graphics mode is not available on this machine.\n");
+        return;
+    }
+
+    col_desktop    = fb_rgb(32, 60, 96);
+    col_face       = fb_rgb(200, 200, 205);
+    col_edge       = fb_rgb(245, 245, 250);
+    col_shade      = fb_rgb(18, 32, 52);
+    col_title_on   = fb_rgb(28, 88, 168);
+    col_title_off  = fb_rgb(120, 120, 130);
+    col_term_bg    = fb_rgb(14, 16, 24);
+    col_term_fg    = fb_rgb(120, 230, 140);
+    col_bar        = fb_rgb(38, 44, 58);
+    col_bar_btn    = fb_rgb(60, 68, 86);
+    col_bar_btn_on = fb_rgb(28, 88, 168);
+    col_white      = fb_rgb(255, 255, 255);
+    col_black      = fb_rgb(0, 0, 0);
+
+    int W = (int)fb_width();
+    int H = (int)fb_height();
 
     term_clear();
 
-    /* Later entries are drawn on top, so the terminal goes last and starts
-     * focused. */
-    /* Laid out so both are fully visible at startup. They can be dragged over
-     * one another afterwards, which is what demonstrates the z-ordering. */
     window_count = 2;
-    windows[0] = (window_t){ 174, 12, 138, 62,  "system",   WIN_STATS,    true };
-    windows[1] = (window_t){ 6,   82, 308, 112, "terminal", WIN_TERMINAL, true };
-    focused    = 1;
+    windows[0] = (window_t){ W - 460, 90, 400, 260,
+                             "System", WIN_STATS, true };
+    windows[1] = (window_t){ 80, 120,
+                             TERM_COLS * CELL_W + 2 * BORDER + 12,
+                             TERM_ROWS * CELL_H + TITLE_H + 2 * BORDER + 12,
+                             "Terminal", WIN_TERMINAL, true };
+    focused = 1;
 
-    gfx_enter();
-    mouse_set_bounds(GFX_WIDTH, GFX_HEIGHT);
+    mouse_set_bounds(W, H);
 
-    /* From here, everything the shell prints lands in the terminal window. */
+    /* Shell output now lands in the terminal window rather than the console. */
     console_set_sink(term_putc);
 
-    kprintf("MyOS graphical mode\n");
-    kprintf("try: help, tasks, uptime\n\n> ");
+    kprintf("MyOS graphical mode - %dx%d\n", W, H);
+    kprintf("the taskbar toggles windows; drag by the title bar.\n");
+    kprintf("try: help, tasks, meminfo, race off 5\n\n> ");
+
+    bool     dirty = true;
+    int      last_mx = mouse_x(), last_my = mouse_y();
+    uint32_t last_frame = pit_ticks();
 
     for (;;) {
         while (kbd_available()) {
             char c = kbd_poll();
 
-            if (c == 27) {          /* escape */
+            if (c == 27) {
                 console_set_sink(0);
-                gfx_leave();
+
+                /* Repaint the text console from its own stored contents; it
+                 * was never touched while the GUI was up. */
+                fbcon_clear();
                 return;
             }
 
@@ -330,38 +356,67 @@ void gui_run(void)
                 len = 0;
                 kprintf("> ");
             } else if (c == '\b') {
-                if (len > 0) {
-                    len--;
-                    kputc('\b');
-                }
+                if (len > 0) { len--; kputc('\b'); }
             } else if (c >= 32 && c < 127 && len < (int)sizeof(line) - 1) {
                 line[len++] = c;
                 kputc(c);
             }
+
+            dirty = true;
         }
 
-        handle_mouse();
+        if (mouse_take_click(MOUSE_LEFT))
+            dirty = handle_click(mouse_x(), mouse_y()) || dirty;
 
-        draw_desktop();
+        if (dragging >= 0) {
+            if (mouse_buttons() & MOUSE_LEFT) {
+                windows[dragging].x = mouse_x() - drag_dx;
+                windows[dragging].y = mouse_y() - drag_dy;
+                dirty = true;
+            } else {
+                dragging = -1;
+            }
+        }
 
-        /* Back to front: index 0 is furthest back after any raising. */
+        if (mouse_x() != last_mx || mouse_y() != last_my) {
+            last_mx = mouse_x();
+            last_my = mouse_y();
+            dirty = true;
+        }
+
+        if (pit_ticks() - last_frame >= 25)
+            dirty = true;
+
+        if (!dirty) {
+            task_yield();
+            continue;
+        }
+
+        dirty = false;
+        last_frame = pit_ticks();
+
+        fb_fill_rect(0, 0, W, H - TASKBAR_H, col_desktop);
+        fb_text(24, 24, "MyOS", col_white, 3);
+        fb_text(24, 64, "bare metal x86 - no operating system underneath",
+                col_edge, TEXT_SCALE);
+
         for (int i = 0; i < window_count; i++) {
             if (!windows[i].visible)
                 continue;
 
-            draw_window(i);
+            draw_window_frame(&windows[i], i == focused);
 
             if (windows[i].kind == WIN_TERMINAL)
                 draw_terminal(&windows[i], i == focused);
             else
-                draw_stats_window(&windows[i]);
+                draw_stats(&windows[i]);
         }
 
+        draw_taskbar();
         draw_cursor();
-        gfx_present();
 
-        /* Yield rather than spin, so background tasks keep running and the
-         * scheduler is visibly still doing its job while the GUI is up. */
+        fb_present();
+
         task_yield();
     }
 }

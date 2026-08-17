@@ -16,7 +16,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-void paging_init(uint32_t memory_bytes);
+/* `fb_addr` and `fb_size` describe a framebuffer to map in addition to RAM.
+ * Video memory typically sits far above installed memory — a mapping covering
+ * only reported RAM would leave it unmapped, and the first pixel written would
+ * page fault. Pass 0 if there is no framebuffer. */
+void paging_init(uint32_t memory_bytes, uint32_t fb_addr, uint32_t fb_size);
 
 /* True once the MMU is on. */
 bool paging_enabled(void);

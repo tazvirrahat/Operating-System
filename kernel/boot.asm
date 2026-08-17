@@ -13,7 +13,8 @@
 ; ---------------------------------------------------------------------------
 MB_ALIGN    equ 1 << 0              ; align loaded modules on page boundaries
 MB_MEMINFO  equ 1 << 1              ; ask GRUB for a memory map
-MB_FLAGS    equ MB_ALIGN | MB_MEMINFO
+MB_VIDEO    equ 1 << 2              ; ask GRUB to set a graphics mode for us
+MB_FLAGS    equ MB_ALIGN | MB_MEMINFO | MB_VIDEO
 MB_MAGIC    equ 0x1BADB002
 MB_CHECKSUM equ -(MB_MAGIC + MB_FLAGS)
 
@@ -22,6 +23,23 @@ align 4
     dd MB_MAGIC
     dd MB_FLAGS
     dd MB_CHECKSUM
+
+    ; Setting the video flag extends the header: the four address fields below
+    ; belong to a load method we do not use, but they occupy fixed positions
+    ; and the video fields follow them, so they must be present as padding.
+    dd 0                    ; header_addr
+    dd 0                    ; load_addr
+    dd 0                    ; load_end_addr
+    dd 0                    ; bss_end_addr
+    dd 0                    ; entry_addr
+
+    ; Requested mode. GRUB treats this as a preference, not a demand: it picks
+    ; the closest mode the hardware actually offers and reports back what it
+    ; chose, so the kernel must read the result rather than assume it got this.
+    dd 0                    ; mode_type: 0 = linear graphics, 1 = text
+    dd 1920                 ; width
+    dd 1080                 ; height
+    dd 32                   ; bits per pixel
 
 ; ---------------------------------------------------------------------------
 ; Stack

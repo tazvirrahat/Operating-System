@@ -226,13 +226,18 @@ static void test_protection(void)
 
     user_mode_demo(true);
 
-    CHECK(task_count() == before,
-          "ring 3 task ran via syscalls and exited cleanly\n");
+    /* Both conditions matter. The task count returning to normal only says
+     * the task is gone; it is equally true if the task was killed. The
+     * completion flag is set by the ring 3 code itself immediately before it
+     * asks to exit, so together they distinguish "ran the whole way" from
+     * "died somewhere in the middle". */
+    CHECK(task_count() == before && user_mode_completed(),
+          "ring 3 task ran via syscalls and reached its exit call\n");
 
     /* And the same task without the syscall route is killed by the CPU. */
     user_mode_demo(false);
 
-    CHECK(task_count() == before,
+    CHECK(task_count() == before && !user_mode_completed(),
           "ring 3 task killed for direct hardware access, kernel survived\n");
 }
 

@@ -1,0 +1,55 @@
+/* fb.h — linear framebuffer graphics.
+ *
+ * GRUB is asked at boot to set a high-resolution mode and reports back the
+ * address of a linear framebuffer: one 32-bit value per pixel, laid out in
+ * rows. From there this is pure software rendering. There is no GPU driver
+ * and no acceleration of any kind — every pixel is computed and written by
+ * the CPU.
+ *
+ * That is why the dirty-rectangle tracking below matters rather than being an
+ * optimisation to add later. At 1920x1080x32 a full frame is 8.3 MB, and
+ * copying that to video memory on every update is far too slow to feel
+ * interactive. Instead only the region that actually changed is copied:
+ * moving the mouse touches a few hundred bytes rather than eight megabytes.
+ */
+#ifndef FB_H
+#define FB_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "multiboot.h"
+
+/* Returns false if GRUB could not give us a graphics mode, in which case the
+ * kernel stays in VGA text mode and the GUI is unavailable. */
+bool fb_init(const multiboot_info_t *mb);
+
+bool     fb_available(void);
+uint32_t fb_width(void);
+uint32_t fb_height(void);
+
+/* Pack 8-bit components into the framebuffer's pixel format. */
+uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
+
+void fb_clear(uint32_t colour);
+void fb_pixel(int x, int y, uint32_t colour);
+void fb_fill_rect(int x, int y, int w, int h, uint32_t colour);
+void fb_rect(int x, int y, int w, int h, uint32_t colour);
+
+/* Text, using the 8x8 font scaled by an integer factor. At 1920x1080 an
+ * unscaled 8x8 glyph is close to unreadable, so the console uses a scale of
+ * 2 and the result is equivalent to a 16x16 font. */
+void fb_char(int x, int y, char c, uint32_t fg, int scale);
+void fb_text(int x, int y, const char *s, uint32_t fg, int scale);
+
+/* Mark a region as changed. Drawing calls do this themselves; it is exposed
+ * for callers that write to the backbuffer directly. */
+void fb_mark_dirty(int x, int y, int w, int h);
+
+/* Copy the dirty region to the display and clear the record. */
+void fb_present(void);
+
+/* Force the whole screen to be copied on the next present. */
+void fb_mark_all_dirty(void);
+
+#endif /* FB_H */

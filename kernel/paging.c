@@ -34,7 +34,7 @@ uint32_t paging_fault_address(void)
     return cr2;
 }
 
-void paging_init(uint32_t memory_bytes)
+void paging_init(uint32_t memory_bytes, uint32_t fb_addr, uint32_t fb_size)
 {
     /* Cap the mapping at what the directory can describe, and at what the
      * machine actually has. */
@@ -87,13 +87,47 @@ void paging_init(uint32_t memory_bytes)
 
     for (uint32_t i = 1; i < ENTRIES; i++) {
         if (i < large_pages) {
+            /* PAGE_USER across all of RAM, not just the first 4 MB.
+             *
+             * User task stacks come from the kernel heap, and once that heap
+             * grew past 4 MB those stacks landed in this range. Without the
+             * flag here a ring 3 task page faults on the first write to its
+             * own stack — which is exactly what happened when the heap was
+             * enlarged to hold the framebuffer backbuffer.
+             *
+             * This widens the existing, documented limitation rather than
+             * introducing a new one: memory is not isolated between ring 0 and
+             * ring 3 in this kernel. What is enforced is instruction
+             * privilege. Proper isolation would mean allocating user stacks
+             * from a separate region mapped user-accessible on its own. */
             page_directory[i] = (i * LARGE_PAGE_BYTES)
-                              | PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE_4MB;
+                              | PAGE_PRESENT | PAGE_WRITE | PAGE_USER
+                              | PAGE_SIZE_4MB;
             mapped_bytes += LARGE_PAGE_BYTES;
         } else {
             /* Not present. Touching an address up here faults, which is what
              * the `fault page <addr>` demo relies on. */
             page_directory[i] = 0;
+        }
+    }
+
+    /* --- the framebuffer, wherever it happens to live ---
+     *
+     * Video memory is usually mapped well above installed RAM — commonly
+     * around 0xE0000000 on a virtual machine with 128 MB of memory. The loop
+     * above stops at the end of RAM, so without this the framebuffer address
+     * has no mapping and the first pixel written raises a page fault. */
+    if (fb_addr && fb_size) {
+        uint32_t first = fb_addr / LARGE_PAGE_BYTES;
+        uint32_t last  = (fb_addr + fb_size + LARGE_PAGE_BYTES - 1)
+                       / LARGE_PAGE_BYTES;
+
+        for (uint32_t i = first; i < last && i < ENTRIES; i++) {
+            if (page_directory[i])
+                continue;   /* already mapped as ordinary RAM */
+
+            page_directory[i] = (i * LARGE_PAGE_BYTES)
+                              | PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE_4MB;
         }
     }
 

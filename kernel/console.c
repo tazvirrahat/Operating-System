@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "task.h"
+#include "fbcon.h"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -33,9 +34,16 @@ void kputc(char c)
 
     /* Serial always gets the character; only the visible destination changes.
      * That means a session is logged identically whether it happened in the
-     * text console or inside a window. */
+     * text console, the framebuffer console, or inside a window.
+     *
+     * The framebuffer console takes over once GRUB has put the machine into a
+     * graphics mode, because the VGA text buffer displays nothing at that
+     * point. Until then — and on any machine where the mode request failed —
+     * output goes to text mode as before. */
     if (sink)
         sink(c);
+    else if (fbcon_active())
+        fbcon_putc(c);
     else
         vga_putc(c);
 }

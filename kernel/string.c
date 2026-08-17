@@ -21,6 +21,30 @@ void *memcpy(void *dst, const void *src, size_t n)
     return dst;
 }
 
+void *memmove(void *dst, const void *src, size_t n)
+{
+    uint8_t       *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+
+    if (d == s || n == 0)
+        return dst;
+
+    /* When the destination overlaps and sits after the source, copying
+     * forwards would overwrite bytes still to be read. Going backwards in
+     * that case keeps the unread portion intact. */
+    if (d < s) {
+        while (n--)
+            *d++ = *s++;
+    } else {
+        d += n;
+        s += n;
+        while (n--)
+            *--d = *--s;
+    }
+
+    return dst;
+}
+
 int memcmp(const void *a, const void *b, size_t n)
 {
     const uint8_t *x = (const uint8_t *)a;

@@ -454,6 +454,10 @@ static inline uint32_t sys_call1(uint32_t num, uint32_t arg)
     return ret;
 }
 
+/* Set by the ring 3 program itself just before it asks to exit, so the test
+ * can tell "ran to completion" from "died on the way". */
+static volatile bool user_reached_exit;
+
 /* --- this code runs in ring 3 --- */
 
 static void user_program_direct_hardware(void)
@@ -476,6 +480,12 @@ static void user_program_via_syscall(void)
     sys_call1(SYS_WRITE, (uint32_t)"  [ring3] asking the kernel instead of touching hardware...\n");
     sys_call1(SYS_WRITE, (uint32_t)"  [ring3] hello from ring 3, printed by the kernel on my behalf\n");
     sys_call1(SYS_WRITE, (uint32_t)"  [ring3] exiting cleanly\n");
+
+    /* Record that the whole path completed. The self-test used to check only
+     * that the task count returned to normal, which is true whether the task
+     * exited cleanly or was killed by a fault — so it reported a pass while
+     * ring 3 was in fact page faulting on its own stack. */
+    user_reached_exit = true;
 
     sys_call0(SYS_EXIT);
 
@@ -510,9 +520,15 @@ static void user_task_entry(void)
     enter_user_mode(program, (uint32_t)user_stack + 4096);
 }
 
+bool user_mode_completed(void)
+{
+    return user_reached_exit;
+}
+
 void user_mode_demo(bool use_syscall)
 {
     user_wants_syscall = use_syscall;
+    user_reached_exit  = false;
 
     kprintf("\n");
     task_t *t = task_create("usermode", user_task_entry);
