@@ -30,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # converts QEMU's screendump output (PPM) to PNG, so VGA text-mode output
     # can be inspected and screenshotted without a display attached
     netpbm \
+    # assembles a sequence of screendumps into the animated demo GIF
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /os

@@ -7,7 +7,7 @@
 
 > ## Status: Tier 1, Tier 2 and Tier 3 complete
 >
-> All "must have" items in §6 are done, plus both Tier 3 stretch features (ring 3 with system calls, and paging). The kernel boots, runs 21 self-test checks, and drops into a shell with 15 commands. See [`README.md`](README.md) for what it does and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3 for the eleven real bugs hit on the way.
+> Every item in §6 is done except booting on real hardware. That includes both Tier 3 stretch features (ring 3 with system calls, and paging) and the remaining nice-to-haves (producer/consumer, command history). The kernel boots, runs 22 self-test checks, and drops into a shell with 16 commands. See [`README.md`](README.md) for what it does and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3 for the real bugs hit on the way.
 >
 > **Not done:** booting on real hardware (§3, Tier 3 item 21). It has only ever run under QEMU.
 >
@@ -422,9 +422,9 @@ Tier 1 + Tier 2 is **~40 hours**. At 1 hour/day for 10 days, one person has **10
 ### Stretch
 - [x] Ring 3 with `int 0x80` syscalls
 - [x] Paging enabled; page fault reports `CR2` correctly
-- [x] Semaphore implemented (producer/consumer pattern not built on top of it)
+- [x] Semaphore-based producer/consumer (bounded buffer, 4 slots)
+- [x] Command history (up/down arrows, 16 entries)
 - [ ] **Booted on real hardware (5600G) from USB — not attempted, QEMU only**
-- [ ] Command history (up arrow)
 
 ### Presentation deliverable
 

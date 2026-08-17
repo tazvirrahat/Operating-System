@@ -4,6 +4,10 @@ An educational operating system kernel for 32-bit x86, written from scratch in C
 
 There is no operating system underneath it. No standard library, no `printf`, no runtime. It boots via GRUB, sets up its own descriptor tables, drives the hardware through port I/O, and manages its own memory.
 
+![MyOS demo](docs/images/demo.gif)
+
+*Preemptive multitasking, a race condition losing updates, and ring 3 privilege separation — recorded from the running kernel.*
+
 ![ring 3 privilege separation](docs/images/02-ring3.png)
 
 *The same task, at the same privilege level. Writing to a hardware port directly gets it killed by the CPU; asking the kernel through a system call succeeds.*
@@ -17,7 +21,7 @@ There is no operating system underneath it. No standard library, no `printf`, no
 | **Preemptive multitasking** | Round-robin scheduler driven by the timer interrupt. Tasks never yield; the hardware takes the CPU from them. |
 | **Context switching** | Register save/restore and stack swapping in assembly. |
 | **Dynamic memory** | First-fit heap allocator with block splitting, coalescing, and corruption detection. |
-| **Synchronisation** | Spinlock, mutex and counting semaphore, with a race condition demonstrated *failing* before it is fixed. |
+| **Synchronisation** | Spinlock, mutex and counting semaphore, with a race condition demonstrated *failing* before it is fixed, and a bounded-buffer producer/consumer. |
 | **Interrupt handling** | Own IDT, exception dispatch, PIC remapping, PIT timer, interrupt-driven PS/2 keyboard. |
 | **Virtual memory** | Paging with mixed 4 KB / 4 MB pages, page 0 left unmapped so null dereferences fault. |
 | **Privilege separation** | Ring 3 user tasks that can only reach the kernel through `int 0x80`. |
@@ -88,7 +92,7 @@ AABBCCAABBBCCCAABBCC...            switching resumes
   run 2: 100      ... all exact
 ```
 
-`selftest` runs all 21 checks and reports pass/fail. `make test` runs it headless and fails the build on any failure.
+`selftest` runs all 22 checks and reports pass/fail. `make test` runs it headless and fails the build on any failure.
 
 ![self-test output](docs/images/01-selftest.png)
 
