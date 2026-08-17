@@ -36,10 +36,10 @@ docker build -t myos-dev .
 docker run --rm -v "$(pwd):/os" myos-dev make run
 ```
 
-On Windows PowerShell there is a wrapper:
+On Windows there is a wrapper (a .cmd file, so PowerShell's execution policy does not block it):
 
-```powershell
-.\dev.ps1 run
+```bat
+.\dev.cmd run
 ```
 
 Then type `demo` for a guided tour, or `help` for the full command list. The up and down arrows recall previous commands.

@@ -13,7 +13,7 @@ Two parts: getting the kernel running in VMware, then what to actually show and 
 From the project folder in PowerShell:
 
 ```powershell
-.\dev.ps1
+.\dev.cmd
 ```
 
 This produces `build\myos.iso`. That single file is the whole operating system — everything else in the repo is source code used to make it.
@@ -60,7 +60,7 @@ VirtualBox is a perfectly good substitute if VMware gives you trouble; the steps
 | Symptom | Likely cause |
 |---|---|
 | Black screen, nothing at all | ISO not attached, or the CD-ROM is not set to connect at power-on |
-| GRUB appears but errors | ISO built incorrectly — rebuild with `.\dev.ps1` |
+| GRUB appears but errors | ISO built incorrectly — rebuild with `.\dev.cmd` |
 | Boots then immediately reboots in a loop | A triple fault. Would be a genuine VMware-specific bug — tell me and I will fix it |
 | Reaches the prompt but typing does nothing | You have not clicked into the VM window |
 
@@ -222,7 +222,7 @@ Then `bg stop` to end them.
 If VMware causes trouble, this already works and is equally valid:
 
 ```powershell
-.\dev.ps1 run
+.\dev.cmd run
 ```
 
 Every command above behaves identically. QEMU is an emulator rather than a virtualiser, which is a distinction nobody watching will care about — and if asked, "I developed it against QEMU and it runs the same in a VM" is a perfectly good answer.
