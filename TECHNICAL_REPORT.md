@@ -19,7 +19,7 @@ The system demonstrates the core concerns of an operating system:
 
 - **Preemptive multitasking** — a round-robin scheduler driven by the programmable interval timer, switching tasks that never yield voluntarily
 - **Dynamic memory management** — a first-fit heap allocator with block splitting, coalescing and corruption detection
-- **Synchronisation** — spinlock, mutex and counting semaphore, with a race condition demonstrated failing before it is fixed
+- **Synchronisation** — spinlock, mutex and counting semaphore, with a race condition demonstrated failing before it is fixed, and a bounded-buffer producer/consumer where both sides block rather than poll
 - **Interrupt-driven device I/O** — a PS/2 keyboard driver decoding raw scancodes into a ring buffer
 - **Fault handling** — CPU exceptions caught, diagnosed and contained, killing the offending task while the kernel survives
 - **Virtual memory** — paging with mixed page sizes, page 0 deliberately unmapped so that null dereferences fault
@@ -27,7 +27,7 @@ The system demonstrates the core concerns of an operating system:
 
 Interaction is through a shell rendered in VGA text mode, with a live kernel monitor and a `selftest` command running 21 automated checks.
 
-Roughly 4,200 lines across 44 files.
+Roughly 4,700 lines across 44 files.
 
 ### 1.1 Architecture decision
 
@@ -96,7 +96,8 @@ console (VGA + serial)   output first: nothing after this is debuggable without 
 | Scheduler | `task.c` | Round-robin, preemptive, stack guard words, reaping |
 | Synchronisation | `sync.c` | Spinlock, mutex, semaphore, atomic `xchg` |
 | System calls | `syscall.c` | `int 0x80`, DPL 3 gate, ring 3 entry via `iret` |
-| Shell | `shell.c` | 15 commands, tokeniser, dispatch table |
+| Shell | `shell.c` | 16 commands, tokeniser, dispatch table, 16-entry command history |
+| Utilities | `string.c` | `memset`/`memcpy`/`strcmp`/`strtoul`; gcc emits calls to some of these regardless of `-fno-builtin` |
 | Monitor | `monitor.c` | Live task/heap/IRQ display |
 | Demos, self-test | `demos.c`, `selftest.c` | Shared by the shell and the automated checks |
 
@@ -279,7 +280,23 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.13 Toolchain and workflow
+### 3.13 A synchronisation demo revealed the console was itself unsynchronised
+
+**Situation.** The newly added producer/consumer demonstration printed a marker per item. Its output came out as `c14 cP16 P17 P18 15` — one task's `c15` had been split down the middle, with another task's three markers wedged inside it.
+
+**Task.** `kprintf` wrote straight through to the VGA buffer and the serial port with nothing serialising it. Every other shared structure in the kernel — the heap free list, the task list, the bounded buffer — was already protected, but the console had never been thought of as shared state.
+
+**Action.** The splicing was correct behaviour for unsynchronised code: a task preempted partway through a call resumes later, and whatever ran in between wrote to the same screen. The obvious fix is a mutex around `kprintf`, and it is the wrong one. Fault handlers print, and a fault can occur *inside* a `kprintf` — the handler would then block on a lock held by the very task it interrupted, deadlocking against itself with no way out.
+
+We added a nesting `preempt_disable()` / `preempt_enable()` counter to the scheduler instead, and wrapped `kprintf` in it. Interrupts stay enabled throughout, so the timer keeps ticking and CPU time is still charged to the task; only the reschedule is deferred. A counter nests where a lock deadlocks.
+
+**Result.** Output is atomic per call: the demo now reads `P1 P2 P3 P4 c1 c2 c3 c4 P5 …`, which also makes the semaphore's four-slot bound visible directly rather than buried in noise.
+
+Two things make this worth recording. First, the bug was found by a feature rather than by a test — writing the producer/consumer demo surfaced a defect in code that had been running since the first day. Second, it is a small lesson in what counts as shared state: the console had been treated as an output *service* rather than as a resource two tasks could contend for, and that framing is what hid it.
+
+---
+
+### 3.14 Toolchain and workflow
 
 **Situation.** The project began with no command-line experience on the team: no terminal use, no compiling from a shell, no Git CLI, and no debugger. Bare-metal development requires all of these and provides none of the feedback an IDE gives.
 
@@ -291,7 +308,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.14 *(Add anything else you hit)*
+### 3.15 *(Add anything else you hit)*
 
 **Situation.**
 **Task.**
@@ -315,9 +332,11 @@ All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus bo
 - Heap allocator with splitting, coalescing, exhaustion handling and corruption detection
 - Preemptive round-robin scheduling with stack guard words and reaping of finished tasks
 - Spinlock, mutex and semaphore; race condition demonstrated failing then fixed
+- Bounded-buffer producer/consumer: 24 items through 4 slots, both sides blocking
 - Ring 3 tasks with `int 0x80` system calls
 - Faults contained: the offending task dies, the kernel and shell continue
-- Shell with 15 commands, live kernel monitor, `demo` walkthrough, `selftest`
+- Shell with 16 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
+- Atomic console output: `kprintf` defers preemption so concurrent tasks cannot splice each other's lines
 - `make run`, `make test` and `make debug` from a clean clone
 
 ### 4.2 What does not work
@@ -351,7 +370,7 @@ Printed output proves nothing on its own — a single loop emitting `A B A B` is
 | Ring 3 | Hardware value | Saved `CS` reads `0x1B` — low two bits are the privilege level | PASS |
 | Ring 3 | Ablation | Direct port I/O raises a GPF; the same task via syscall succeeds | PASS, both |
 
-**Automated:** `selftest` runs 21 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
+**Automated:** `selftest` runs 22 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
 
 **Screenshots** captured headlessly via QEMU's `screendump` are in [`docs/images/`](docs/images/).
 

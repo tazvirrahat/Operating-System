@@ -52,7 +52,13 @@ We target **i386 protected mode**, not x86-64 long mode. Long mode *requires* pa
 
 ## 2. What the finished demo looks like
 
-This is the actual deliverable. Everything in this section is the target output.
+> **These are mockups, written before implementation, not transcripts.** They set
+> the target for what the system should be able to show. The real output differs
+> in detail — different addresses, different numbers, plain ASCII borders rather
+> than box-drawing characters, and the race operates on a much smaller counter
+> than sketched here. **For actual output see [`README.md`](README.md) and the
+> screenshots in [`docs/images/`](docs/images/).** This section is kept as the
+> original specification because the reflection in the report refers back to it.
 
 ### 2.1 Boot and shell
 
@@ -420,7 +426,7 @@ Tier 1 + Tier 2 is **~40 hours**. At 1 hour/day for 10 days, one person has **10
 - [x] Mutex — race demo fails without it, passes with it, across repeated runs
 - [x] Shell with ≥8 working commands — 15 implemented
 - [x] `top` monitor reading live kernel state
-- [x] `demo` and `selftest` commands — 21 checks
+- [x] `demo` and `selftest` commands — 22 checks
 - [x] `make run` works from a clean clone
 - [x] README with build instructions, architecture notes, and screenshots
 - [x] [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) complete

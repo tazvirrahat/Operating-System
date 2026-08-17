@@ -42,7 +42,9 @@ On Windows PowerShell there is a wrapper:
 .\dev.ps1 run
 ```
 
-Then type `demo` for a guided tour, or `help` for the full command list.
+Then type `demo` for a guided tour, or `help` for the full command list. The up and down arrows recall previous commands.
+
+The 16 commands are: `help`, `demo`, `selftest`, `spawn`, `bg`, `preempt`, `race`, `prodcons`, `fault`, `user`, `tasks`, `top`, `meminfo`, `uptime`, `echo`, `clear`.
 
 | Target | What it does |
 |---|---|
@@ -158,6 +160,7 @@ kernel/
   heap.c        kmalloc / kfree
   task.c        tasks and the scheduler
   sync.c        spinlock, mutex, semaphore
+  string.c      memset/memcpy/strcmp/strtoul — no libc exists here
   syscall.c     int 0x80 dispatch, ring 3 entry
   shell.c       interactive command loop
   monitor.c     live kernel display
@@ -165,7 +168,7 @@ kernel/
   selftest.c    automated verification
 ```
 
-Roughly 4,200 lines across 44 files.
+Roughly 4,700 lines across 44 files.
 
 ## Built with
 
