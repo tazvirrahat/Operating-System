@@ -65,3 +65,16 @@ build/
 *.swp
 .DS_Store
 Thumbs.db
+
+# VMware runtime files — generated when a VM is powered on, not source
+vmware/*.vmem
+vmware/*.vmem.lck/
+vmware/*.lck/
+vmware/*.nvram
+vmware/nvram
+vmware/*.vmsd
+vmware/*.vmxf
+vmware/*.scoreboard
+vmware/vmware*.log
+vmware/myos-serial.log
+vmware/*.vmss

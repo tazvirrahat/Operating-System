@@ -10,8 +10,8 @@
 #
 # The relative path below assumes this file stays in the vmware\ folder of the
 # repository, with the ISO at ..\build\myos.iso.
-
 .encoding = "UTF-8"
+
 config.version = "8"
 virtualHW.version = "19"
 
@@ -65,3 +65,18 @@ svga.vramSize = "4194304"
 
 tools.syncTime = "FALSE"
 msg.autoAnswer = "TRUE"
+extendedConfigFile = "MyOS.vmxf"
+virtualHW.productCompatibility = "hosted"
+vmxstats.filename = "MyOS.scoreboard"
+numa.autosize.cookie = "10012"
+numa.autosize.vcpu.maxPerVirtualNode = "1"
+uuid.bios = "56 4d f2 aa 33 9c 68 a5-f4 ef 93 0c 01 e0 dc 89"
+uuid.location = "56 4d f2 aa 33 9c 68 a5-f4 ef 93 0c 01 e0 dc 89"
+vmotion.checkpointFBSize = "4194304"
+vmotion.checkpointSVGAPrimarySize = "4194304"
+vmotion.svga.mobMaxSize = "4194304"
+vmotion.svga.graphicsMemoryKB = "4096"
+monitor.phys_bits_used = "45"
+vm.lastPowerRequestTimestamp = "1786980720917000"
+cleanShutdown = "TRUE"
+softPowerOff = "FALSE"

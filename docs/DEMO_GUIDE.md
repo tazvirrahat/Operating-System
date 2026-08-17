@@ -2,7 +2,7 @@
 
 Two parts: getting the kernel running in VMware, then what to actually show and say.
 
-> **Important:** the kernel has **not yet been booted in VMware** — it has only ever run in QEMU. Everything below should work, but *verify it before the day you record*, not on the day. The QEMU fallback in Part 4 is already proven and is a perfectly legitimate demo on its own.
+> **Verified.** The kernel has been booted in VMware Workstation Pro and all 22 self-tests passed, including ring 3 and paging. The full boot transcript is saved at [`vmware-boot-log.txt`](vmware-boot-log.txt). The QEMU path in Part 4 also works, as a fallback.
 
 ---
 

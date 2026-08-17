@@ -1,0 +1,76 @@
+
+  MyOS v1.0 - a bare metal x86 kernel
+  i386 protected mode, no operating system underneath
+
+multiboot        : 2badb002 OK
+memory           : 638 KB low, 128896 KB high (126 MB total)
+gdt              : 6 descriptors, flat 4GB, ring 0 + ring 3
+idt              : 256 entries, 32 exceptions + 16 irqs installed
+pic              : remapped irq 0-15 to vectors 32-47
+pit              : 100 Hz (divisor 11931), irq 0 unmasked
+keyboard         : ps/2, irq 1 unmasked, 128 byte buffer
+paging           : enabled, 123 MB identity mapped, page 0 unmapped
+heap             : 1024 KB at 00112000
+scheduler        : round-robin, 1 tick timeslice, preemptive
+syscalls         : int 0x80, dpl 3, 4 calls
+interrupts       : enabled
+
+TIMER
+  [PASS] timer advances independently of the CPU (10 ticks)
+  [PASS] configured frequency reported correctly (100 Hz)
+HEAP
+  [PASS] allocations succeed
+  [PASS] allocations do not overlap
+  [PASS] writing one block leaves its neighbour untouched
+  [PASS] freed address is reused
+  [PASS] adjacent free blocks coalesce (1 blocks)
+  [PASS] exhaustion returns NULL, not garbage
+  [PASS] block list structurally intact
+SCHEDULER
+  [PASS] silent task received CPU time (counter = 575264779)
+  [PASS] context switches occurred (62 total)
+  [PASS] preemption off -> no involuntary switches (ablation)
+  [PASS] preemption on  -> switching resumes
+  [PASS] all stack guard words intact
+SYNCHRONISATION
+         unlocked runs: 70 62 50 50 65  (expected 100)
+  [PASS] unsynchronised counter loses updates
+  [PASS] results vary between runs (genuine nondeterminism)
+         locked runs  : 100, 100 (expected 100)
+  [PASS] mutex makes the counter exact
+  [PASS] semaphore counts down and back up correctly
+  [PASS] producer/consumer: 24 items through a 4-slot buffer, none lost
+PROTECTION
+  [PASS] paging enabled (123 MB identity mapped)
+
+  [ring0] CS = 0008 (ring 0) before the transition
+  [ring3] running unprivileged
+  [ring3] asking the kernel instead of touching hardware...
+  [ring3] hello from ring 3, printed by the kernel on my behalf
+  [ring3] exiting cleanly
+
+shell still running, 1 task alive.
+
+  [PASS] ring 3 task ran via syscalls and exited cleanly
+
+  [ring0] CS = 0008 (ring 0) before the transition
+  [ring3] running unprivileged
+  [ring3] writing directly to VGA port 0x3D4...
+
+*** CPU EXCEPTION 13: general protection fault ***
+  error code: 00000000
+  eax=0000000f ebx=00105d10 ecx=00100a30 edx=000003d4
+  esi=00000000 edi=00000000 ebp=00000000 esp=00114080
+  eip=00100a4e cs=001b eflags=00010202
+  killed task 'usermode' (id 21) - kernel survives
+
+shell still running, 1 task alive.
+
+  [PASS] ring 3 task killed for direct hardware access, kernel survived
+
+22 passed, 0 failed
+
+type 'help' for commands, or 'demo' for a guided tour.
+use the up and down arrows to recall previous commands.
+
+> 

@@ -188,3 +188,7 @@ A ready-made VMware configuration is in [`vmware/MyOS.vmx`](vmware/MyOS.vmx). Bu
 There is **no virtual disk attached**, so the guest has no writable storage — it boots from the ISO and runs entirely in RAM. Nothing on the host can be modified.
 
 The kernel probes for a serial port at startup and skips serial output if none answers, so it boots correctly whether or not one is configured. Verified both ways under QEMU: 22 self-tests pass with a serial port and with `-serial none`.
+
+**Confirmed working in VMware Workstation Pro** — all 22 self-tests pass, including ring 3 privilege separation and paging. Full boot transcript: [`docs/vmware-boot-log.txt`](docs/vmware-boot-log.txt).
+
+Worth noting what this checks that an emulator does not: VMware runs guest instructions on the real CPU through hardware virtualisation rather than interpreting them. The descriptor tables, paging structures and privilege transitions are being consumed by actual silicon.
