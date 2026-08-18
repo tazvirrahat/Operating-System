@@ -78,3 +78,4 @@ vmware/*.scoreboard
 vmware/vmware*.log
 vmware/myos-serial.log
 vmware/*.vmss
+tools/*.pyc
