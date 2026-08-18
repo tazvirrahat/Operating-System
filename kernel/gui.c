@@ -10,6 +10,7 @@
 #include "heap.h"
 #include "pit.h"
 #include "rtc.h"
+#include "wallpaper.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -60,6 +61,8 @@ static uint32_t col_desktop, col_face, col_edge, col_shade;
 static uint32_t col_title_on, col_title_off, col_term_bg, col_term_fg;
 static uint32_t col_bar, col_btn, col_btn_on, col_white, col_black, col_accent;
 static uint32_t col_close;
+static uint32_t col_search, col_search_fg;
+static uint32_t col_menu, col_menu_fg;
 
 /* ---- terminal ------------------------------------------------------------ */
 
@@ -302,61 +305,125 @@ static void draw_stats(const window_t *win)
     }
 }
 
+/* The Start menu's geometry is needed both to draw it and to work out what a
+ * click landed on. Two copies of these expressions is how a menu item ends up
+ * one row off from the thing it runs, so there is only one. */
+#define START_ITEMS 4
+
+static const char *start_items[START_ITEMS] = {
+    "Terminal", "System", "Change wallpaper", "Exit to console"
+};
+
+static void start_menu_box(int *x, int *y, int *w, int *h, int *row)
+{
+    int rh = CHROME_H + 16;
+
+    *row = rh;
+    *w   = 19 * CHROME_W;
+    *h   = START_ITEMS * rh + 16;
+    *x   = 0;                               /* flush left, as on Windows */
+    *y   = SCR_H - TASKBAR_H - *h;
+}
+
 static void draw_start_menu(void)
 {
-    int mw = 18 * CHROME_W;
-    int mh = 3 * (CHROME_H + 10) + 12;
-    int mx = 4;
-    int my = SCR_H - TASKBAR_H - mh;
+    int mx, my, mw, mh, rh;
+    start_menu_box(&mx, &my, &mw, &mh, &rh);
 
-    fb_shadow(mx, my, mw, mh, 8, 8);
-    fb_fill_round_rect(mx, my, mw, mh, 8, col_face);
+    fb_shadow(mx, my, mw, mh, 10, 10);
+    fb_fill_rect(mx, my, mw, mh, col_menu);
 
-    static const char *items[3] = { "Terminal", "System", "Exit to console" };
+    /* A hairline along the top and right edges. Without it the panel merges
+     * into a dark wallpaper and stops reading as a surface. */
+    fb_blend_rect(mx, my, mw, 1, col_white, 26);
+    fb_blend_rect(mx + mw - 1, my, 1, mh, col_white, 26);
 
-    for (int i = 0; i < 3; i++) {
-        int iy = my + 6 + i * (CHROME_H + 10);
-        fb_fill_round_rect(mx + 5, iy, mw - 10, CHROME_H + 6, 4, col_face);
-        fb_text_aa(mx + 12, iy + 3, items[i], col_black, true);
+    for (int i = 0; i < START_ITEMS; i++) {
+        int iy = my + 8 + i * rh;
+
+        fb_text_aa(mx + 16, iy + (rh - CHROME_H) / 2,
+                   start_items[i], col_menu_fg, true);
     }
 }
 
+/* The taskbar follows the Windows layout: a square Start button hard against
+ * the left edge, a search field beside it, then one flat button per window
+ * with an accent underline on the active one, and the clock at the far right.
+ *
+ * Nothing here is rounded. The rounding used on windows would be wrong on a
+ * bar that meets three screen edges -- the corners have nowhere to sit. */
 static void draw_taskbar(void)
 {
     int bar_y = SCR_H - TASKBAR_H;
+    int lh    = fb_font_height(true);
+    int text_y = bar_y + (TASKBAR_H - lh) / 2;
 
     fb_fill_rect(0, bar_y, SCR_W, TASKBAR_H, col_bar);
+    fb_blend_rect(0, bar_y, SCR_W, 1, col_white, 30);
 
-    /* A hairline of light along the top rather than a coloured band. */
-    fb_blend_rect(0, bar_y, SCR_W, 1, col_white, 45);
+    /* Start: a square the full height of the bar, flush to the corner. */
+    int start_w = TASKBAR_H + 14;
 
-    /* Start button. */
-    int sw = 7 * CHROME_W;
-    fb_fill_round_rect(8, bar_y + 6, sw, TASKBAR_H - 12, 6,
-                       start_menu_open ? col_btn_on : col_btn);
-    fb_text_aa(16, bar_y + (TASKBAR_H - fb_font_height(true)) / 2, "Start", col_white, true);
+    if (start_menu_open)
+        fb_fill_rect(0, bar_y, start_w, TASKBAR_H, col_btn_on);
 
-    /* One button per window. Width is divided from the space that is actually
-     * left, rather than assumed, so the labels never run into the clock. */
-    int first = sw + 16;
-    int clock_w = 13 * CHROME_W;
-    int avail = SCR_W - first - clock_w - 16;
-    int bw = avail / MAX_WINDOWS;
+    /* Four panes, which is the Windows mark reduced to its essentials. */
+    int gx = 14;
+    int gy = bar_y + TASKBAR_H / 2 - 9;
+    int gs = 8;
 
-    if (bw > 18 * CHROME_W) bw = 20 * CELL_W;
+    fb_fill_rect(gx,          gy,          gs, gs, col_white);
+    fb_fill_rect(gx + gs + 2, gy,          gs, gs, col_white);
+    fb_fill_rect(gx,          gy + gs + 2, gs, gs, col_white);
+    fb_fill_rect(gx + gs + 2, gy + gs + 2, gs, gs, col_white);
 
-    for (int i = 0; i < window_count && bw > 5 * CHROME_W; i++) {
-        int bx = first + i * (bw + 6);
+    /* Search field. It is decoration: there is nothing to search yet, and it
+     * says so rather than accepting input that would go nowhere. */
+    int search_x = start_w + 6;
+    int search_w = 300;
 
-        fb_fill_round_rect(bx, bar_y + 6, bw - 8, TASKBAR_H - 12, 6,
-                           windows[i].visible ? col_btn_on : col_btn);
-        fb_text_aa(bx + 10, bar_y + (TASKBAR_H - fb_font_height(true)) / 2,
-                   windows[i].title, col_white, true);
+    if (search_w > SCR_W / 4)
+        search_w = SCR_W / 4;
+
+    fb_fill_rect(search_x, bar_y + 5, search_w, TASKBAR_H - 10, col_search);
+
+    /* A magnifier: a circle outline with a stroke off one corner. */
+    int mx = search_x + 16, my = bar_y + TASKBAR_H / 2;
+    fb_blend_round_rect(mx - 6, my - 6, 12, 12, 6, col_search_fg, 200);
+    fb_fill_rect(mx - 3, my - 3, 6, 6, col_search);
+    for (int i = 0; i < 5; i++)
+        fb_fill_rect(mx + 4 + i, my + 4 + i, 2, 2, col_search_fg);
+
+    fb_text_aa(search_x + 34, text_y, "Type here to search", col_search_fg, true);
+
+    /* One button per window, flat, with an accent underline when open. */
+    int bx    = search_x + search_w + 10;
+    int btn_w = 190;
+    int clock_w = 130;
+
+    for (int i = 0; i < window_count; i++) {
+        if (bx + btn_w > SCR_W - clock_w)
+            break;
+
+        bool open = windows[i].visible;
+        bool front = open && (i == focused);
+
+        if (open)
+            fb_blend_rect(bx, bar_y + 1, btn_w, TASKBAR_H - 1,
+                          col_white, front ? 26 : 14);
+
+        fb_text_aa(bx + 14, text_y, windows[i].title, col_white, true);
+
+        if (open)
+            fb_fill_rect(bx + 2, bar_y + TASKBAR_H - 3, btn_w - 4, 3,
+                         front ? col_accent : col_title_off);
+
+        bx += btn_w + 2;
     }
 
-    /* Real wall-clock time and date from the CMOS chip. The PIT can only say
-     * how long the machine has been up; the date has to come from hardware
-     * that keeps counting while it is switched off. */
+    /* Clock and date, right-aligned. Both lines share a right edge, so each
+     * is measured and offset rather than being placed at a fixed column --
+     * the interface face is proportional. */
     rtc_time_t now;
     rtc_read(&now);
 
@@ -372,29 +439,22 @@ static void draw_taskbar(void)
     int n = 0;
     date[n++] = (char)('0' + now.day / 10);
     date[n++] = (char)('0' + now.day % 10);
-    date[n++] = ' ';
-
-    const char *mon = rtc_month_name(now.month);
-    while (*mon)
-        date[n++] = *mon++;
-
-    date[n++] = ' ';
+    date[n++] = '/';
+    date[n++] = (char)('0' + now.month / 10);
+    date[n++] = (char)('0' + now.month % 10);
+    date[n++] = '/';
     date[n++] = (char)('0' + (now.year / 1000) % 10);
     date[n++] = (char)('0' + (now.year / 100) % 10);
     date[n++] = (char)('0' + (now.year / 10) % 10);
     date[n++] = (char)('0' + now.year % 10);
     date[n]   = '\0';
 
-    /* Right-aligned, and measured rather than counted: the interface face is
-     * proportional, so the width of "18 Aug 2026" is not a character count. */
-    int cw   = fb_text_width(clock, true);
-    int dw   = fb_text_width(date, true);
-    int wide = cw > dw ? cw : dw;
-    int cx   = SCR_W - wide - 18;
-    int lh   = fb_font_height(true);
+    int cw = fb_text_width(clock, true);
+    int dw = fb_text_width(date, true);
+    int right = SCR_W - 16;
 
-    fb_text_aa(cx + (wide - cw), bar_y + TASKBAR_H / 2 - lh + 1, clock, col_white, true);
-    fb_text_aa(cx + (wide - dw), bar_y + TASKBAR_H / 2 + 1, date, col_accent, true);
+    fb_text_aa(right - cw, bar_y + TASKBAR_H / 2 - lh, clock, col_white, true);
+    fb_text_aa(right - dw, bar_y + TASKBAR_H / 2 + 1, date, col_white, true);
 }
 
 /* ---- cursor -------------------------------------------------------------
@@ -509,18 +569,17 @@ static bool handle_click(int mx, int my)
     int bar_y = SCR_H - TASKBAR_H;
 
     if (start_menu_open) {
-        int mw = 18 * CHROME_W;
-        int mh = 3 * (CHROME_H + 10) + 12;
-        int sx = 4;
-        int sy = SCR_H - TASKBAR_H - mh;
+        int sx, sy, mw, mh, rh;
+        start_menu_box(&sx, &sy, &mw, &mh, &rh);
 
         if (in_rect(mx, my, sx, sy, mw, mh)) {
-            int item = (my - sy - 6) / (CELL_H + 10);
+            int item = (my - sy - 8) / rh;
             start_menu_open = false;
 
             if (item == 0) show_window(WIN_TERMINAL);
             else if (item == 1) show_window(WIN_STATS);
-            else if (item == 2) return false;
+            else if (item == 2) wallpaper_next();
+            else if (item == 3) return false;
 
             return true;
         }
@@ -529,22 +588,30 @@ static bool handle_click(int mx, int my)
     }
 
     if (my >= bar_y) {
-        int sw = 7 * CHROME_W;
+        /* These have to agree with draw_taskbar. Keeping the geometry in two
+         * places is the usual way a button stops lining up with the thing it
+         * activates, so both use the same expressions. */
+        int start_w  = TASKBAR_H + 14;
+        int search_x = start_w + 6;
+        int search_w = 300;
 
-        if (in_rect(mx, my, 6, bar_y + 5, sw, TASKBAR_H - 10)) {
+        if (search_w > SCR_W / 4)
+            search_w = SCR_W / 4;
+
+        if (mx < start_w) {
             start_menu_open = !start_menu_open;
             return true;
         }
 
-        int first = sw + 16;
-        int clock_w = 13 * CHROME_W;
-        int avail = SCR_W - first - clock_w - 16;
-        int bw = avail / MAX_WINDOWS;
-        if (bw > 18 * CHROME_W) bw = 20 * CELL_W;
+        int bx = search_x + search_w + 10;
+        int btn_w = 190;
+        int clock_w = 130;
 
         for (int i = 0; i < window_count; i++) {
-            int bx = first + i * (bw + 6);
-            if (in_rect(mx, my, bx, bar_y + 5, bw - 6, TASKBAR_H - 10)) {
+            if (bx + btn_w > SCR_W - clock_w)
+                break;
+
+            if (in_rect(mx, my, bx, bar_y, btn_w, TASKBAR_H)) {
                 windows[i].visible = !windows[i].visible;
                 if (windows[i].visible) {
                     raise_window(i);
@@ -552,6 +619,8 @@ static bool handle_click(int mx, int my)
                 }
                 return true;
             }
+
+            bx += btn_w + 2;
         }
 
         return true;
@@ -641,6 +710,10 @@ void gui_run(void)
     col_btn_on    = fb_rgb(70,  110, 170);
     col_accent    = fb_rgb(138, 170, 214);
     col_close     = fb_rgb(198, 88,  84);
+    col_search    = fb_rgb(60,  64,  76);
+    col_search_fg = fb_rgb(186, 190, 200);
+    col_menu      = fb_rgb(32,  36,  46);
+    col_menu_fg   = fb_rgb(238, 240, 245);
     col_white     = fb_rgb(255, 255, 255);
     col_black     = fb_rgb(0,   0,   0);
 
@@ -797,26 +870,10 @@ void gui_run(void)
         if (scene_dirty) {
             scene_dirty = false;
 
-            /* A vertical gradient rather than a flat colour. One fill and one
-             * blend per band; the eye reads the result as depth, and it is the
-             * cheapest thing that stops a desktop looking like a painted slab.
-             * Only redrawn when the scene changes, so the cost is paid on
-             * window movement rather than on every frame. */
-            {
-                int gh = SCR_H - TASKBAR_H;
-                int bands = 64;
-                int bh = (gh + bands - 1) / bands;
-
-                for (int i = 0; i < bands; i++) {
-                    fb_fill_rect(0, i * bh, SCR_W, bh, col_desktop);
-                    fb_blend_rect(0, i * bh, SCR_W, bh, col_black,
-                                  (uint32_t)(i * 100 / bands));
-                }
-            }
-            fb_text_aa(14, 10, "MyOS", col_white, true);
-            fb_text_aa(14 + fb_text_width("MyOS   ", true), 10,
-                       "an operating system, running on the hardware",
-                       col_accent, true);
+            /* The wallpaper draws itself; nothing is written over it.
+             * A desktop is a backdrop, and a caption sitting on it is the
+             * sort of thing only a demo has. */
+            wallpaper_draw(SCR_W, SCR_H - TASKBAR_H);
 
             for (int i = 0; i < window_count; i++) {
                 if (!windows[i].visible)
