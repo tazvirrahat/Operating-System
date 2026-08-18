@@ -50,4 +50,11 @@ void svga_sync(void);
 uint32_t svga_command_count(void);
 const char *svga_name(void);
 
+
+/* Raw capability word and 3D bits, for reporting. */
+uint32_t svga_raw_caps(void);
+bool     svga_has_3d(void);
+uint32_t svga_fifo_min(void);
+
+
 #endif /* SVGA_H */

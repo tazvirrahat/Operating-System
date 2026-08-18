@@ -37,6 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # kernel does not depend on one emulator's quirks -- which is what makes
     # it plausible on VMware or real hardware.
     bochs bochsbios vgabios \
+    # Renders a real font to an anti-aliased greyscale atlas at build time.
+    # The kernel embeds the result, so TrueType parsing and floating point
+    # stay out of the kernel entirely while glyph edges still come out smooth.
+    python3 python3-pil fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /os

@@ -374,6 +374,10 @@ static void cmd_gpuinfo(int argc, char **argv)
 
     kprintf("framebuffer     : %08x\n", svga_framebuffer());
     kprintf("capabilities    : %08x\n", svga_fifo_capabilities());
+    kprintf("3d capable      : %s\n",
+            svga_has_3d() ? "YES" : "no - SVGA_CAP_3D (bit 14) is not set");
+    kprintf("extended fifo   : %s\n",
+            (svga_raw_caps() & 0x00008000) ? "yes" : "no");
     kprintf("accel fill      : %s\n", svga_can_fill() ? "yes" : "no");
     kprintf("accel copy      : %s\n", svga_can_copy() ? "yes" : "no");
     kprintf("commands issued : %u\n", svga_command_count());

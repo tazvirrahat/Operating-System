@@ -146,6 +146,10 @@ bool svga_init(void)
     kprintf("                 : accelerated fill %s, copy %s\n",
             svga_can_fill() ? "yes" : "no",
             svga_can_copy() ? "yes" : "no");
+    kprintf("                 : caps %08x  3d %s  extended fifo %s\n",
+            capabilities,
+            (capabilities & 0x00004000) ? "YES" : "no",
+            (capabilities & 0x00008000) ? "yes" : "no");
 
     return true;
 }
@@ -244,3 +248,12 @@ bool svga_copy_rect(int sx, int sy, int dx, int dy, int w, int h)
     commands_issued++;
     return true;
 }
+
+/* SVGA_CAP_3D is the bit that says the adapter will accept the SVGA3D
+ * command set at all. Without it there is no 3D pipeline exposed to the
+ * guest, whatever the host is capable of. */
+#define SVGA_CAP_3D 0x00004000
+
+uint32_t svga_raw_caps(void) { return capabilities; }
+bool     svga_has_3d(void)   { return present && (capabilities & SVGA_CAP_3D); }
+uint32_t svga_fifo_min(void) { return present && fifo ? fifo[SVGA_FIFO_MIN] : 0; }
