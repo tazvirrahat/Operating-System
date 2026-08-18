@@ -107,6 +107,14 @@ AABBCCAABBBCCCAABBCC...            switching resumes
 
 ![kernel monitor](docs/images/04-top.png)
 
+## The desktop
+
+`gui` switches the shell into a 1920x1080 graphical desktop, drawn entirely by this kernel — no graphics library underneath, and no compositor but the one in `gui.c`.
+
+![the graphical desktop](docs/images/06-gui.png)
+
+Windows drag by their title bar, the taskbar clock is read from the CMOS real-time clock, the terminal scrolls with the mouse wheel, and **Start → Change wallpaper** cycles the desktop gradient.
+
 ## How it works
 
 **Boot.** GRUB finds a multiboot header in the first 8 KB of the kernel image, loads it at 1 MB with the CPU already in 32-bit protected mode, and jumps to `_start`. That stub establishes a stack and calls `kmain`. Using GRUB avoids the entire legacy boot sequence — no boot sector, no real mode, no manual mode switching.
