@@ -67,4 +67,23 @@ void fb_write_rect(int x, int y, int w, int h, const uint32_t *src);
 /* Force the whole screen to be copied on the next present. */
 void fb_mark_all_dirty(void);
 
-#endif /* FB_H */
+
+/* ---- anti-aliased text ----
+ *
+ * Glyphs are blended by coverage rather than drawn as on/off pixels, which is
+ * what gives smooth edges. `ui` selects the proportional interface face; false
+ * selects the monospaced one used by the terminal.
+ *
+ * fb_char_aa returns the advance width, which for a proportional face is not
+ * the cell width -- an 'i' advances less than a 'W'.
+ */
+int  fb_char_aa(int x, int y, char c, uint32_t colour, bool ui);
+int  fb_text_aa(int x, int y, const char *s, uint32_t colour, bool ui);
+int  fb_text_width(const char *s, bool ui);
+int  fb_font_height(bool ui);
+int  fb_mono_advance(void);
+
+/* Blend a colour over a region. Used for shadows and translucent panels. */
+void fb_blend_rect(int x, int y, int w, int h, uint32_t colour, uint32_t alpha);
+
+#endif

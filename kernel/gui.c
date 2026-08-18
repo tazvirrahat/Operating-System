@@ -124,8 +124,8 @@ static void draw_window_frame(const window_t *win, bool active)
                  win->w - 2 * BORDER, TITLE_H,
                  active ? col_title_on : col_title_off);
 
-    fb_text(win->x + 8, win->y + (TITLE_H - 8 * SCALE) / 2 + BORDER,
-            win->title, col_white, SCALE);
+    fb_text_aa(win->x + 10, win->y + (TITLE_H - fb_font_height(true)) / 2 + BORDER,
+               win->title, col_white, true);
 
     /* Close box on the right of the title bar. */
     int bs = TITLE_H - 10;
@@ -162,8 +162,8 @@ static void draw_terminal(const window_t *win, bool active)
         for (int col = 0; col < term_cols; col++) {
             char c = term_cells[row][col];
             if (c != ' ')
-                fb_char(tx + col * CELL_W, ty + row * CELL_H,
-                        c, col_term_fg, TERM_SCALE);
+                fb_char_aa(tx + col * CELL_W, ty + row * CELL_H,
+                           c, col_term_fg, false);
         }
 
     if (active)
@@ -183,7 +183,7 @@ static void draw_number(int x, int y, uint32_t v, uint32_t colour)
     while (p > 0) out[q++] = digits[--p];
     out[q] = '\0';
 
-    fb_text(x, y, out, colour, SCALE);
+    fb_text_aa(x, y, out, colour, true);
 }
 
 static void draw_stats(const window_t *win)
@@ -206,7 +206,7 @@ static void draw_stats(const window_t *win)
     int step = CHROME_H + 5;
 
     for (int i = 0; i < 5; i++) {
-        fb_text(tx, ty + i * step, labels[i], col_black, SCALE);
+        fb_text_aa(tx, ty + i * step, labels[i], col_black, true);
         draw_number(tx + 10 * CHROME_W, ty + i * step, values[i], col_title_on);
     }
 }
@@ -227,7 +227,7 @@ static void draw_start_menu(void)
     for (int i = 0; i < 3; i++) {
         int iy = my + 6 + i * (CHROME_H + 10);
         fb_fill_rect(mx + 4, iy, mw - 8, CHROME_H + 6, col_face);
-        fb_text(mx + 10, iy + 3, items[i], col_black, SCALE);
+        fb_text_aa(mx + 12, iy + 3, items[i], col_black, true);
     }
 }
 
@@ -243,7 +243,7 @@ static void draw_taskbar(void)
     fb_fill_rect(6, bar_y + 5, sw, TASKBAR_H - 10,
                  start_menu_open ? col_btn_on : col_btn);
     fb_rect(6, bar_y + 5, sw, TASKBAR_H - 10, col_black);
-    fb_text(14, bar_y + (TASKBAR_H - 8 * SCALE) / 2, "Start", col_white, SCALE);
+    fb_text_aa(16, bar_y + (TASKBAR_H - fb_font_height(true)) / 2, "Start", col_white, true);
 
     /* One button per window. Width is divided from the space that is actually
      * left, rather than assumed, so the labels never run into the clock. */
@@ -260,8 +260,8 @@ static void draw_taskbar(void)
         fb_fill_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10,
                      windows[i].visible ? col_btn_on : col_btn);
         fb_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10, col_black);
-        fb_text(bx + 8, bar_y + (TASKBAR_H - 8 * SCALE) / 2,
-                windows[i].title, col_white, SCALE);
+        fb_text_aa(bx + 10, bar_y + (TASKBAR_H - fb_font_height(true)) / 2,
+                   windows[i].title, col_white, true);
     }
 
     /* Uptime where a clock would be. There is no real-time clock driver, so
@@ -269,7 +269,7 @@ static void draw_taskbar(void)
     uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
     int cx = SCR_W - clock_w - 6;
 
-    fb_text(cx, bar_y + (TASKBAR_H - 8 * SCALE) / 2, "up", col_white, SCALE);
+    fb_text_aa(cx, bar_y + (TASKBAR_H - fb_font_height(true)) / 2, "up", col_white, true);
     draw_number(cx + 3 * CHROME_W, bar_y + (TASKBAR_H - 8 * SCALE) / 2,
                 secs, col_white);
 }
@@ -476,12 +476,15 @@ void gui_run(void)
      * for terminal content buys back the columns the output was written for. */
     TERM_SCALE = (SCR_W >= 1600) ? 2 : 1;
 
-    CELL_W    = 8 * TERM_SCALE;
-    CELL_H    = 8 * TERM_SCALE;
-    CHROME_W  = 8 * SCALE;
-    CHROME_H  = 8 * SCALE;
-    TASKBAR_H = 14 * SCALE + 12;
-    TITLE_H   = 10 * SCALE + 8;
+    /* Metrics come from the font now. The terminal grid is the monospaced
+     * advance; chrome spacing is measured from a representative character
+     * rather than assumed, because the interface face is proportional. */
+    CELL_W    = fb_mono_advance();
+    CELL_H    = fb_font_height(false);
+    CHROME_W  = fb_text_width("M", true);
+    CHROME_H  = fb_font_height(true);
+    TASKBAR_H = CHROME_H + 20;
+    TITLE_H   = CHROME_H + 12;
 
     col_desktop   = fb_rgb(30, 58, 92);
     col_face      = fb_rgb(206, 206, 210);
@@ -625,10 +628,10 @@ void gui_run(void)
             scene_dirty = false;
 
             fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
-            fb_text(10, 8, "MyOS", col_white, SCALE);
-            fb_text(10 + 6 * CHROME_W, 8,
-                    "an operating system, running on the hardware",
-                    col_accent, SCALE);
+            fb_text_aa(14, 10, "MyOS", col_white, true);
+            fb_text_aa(14 + fb_text_width("MyOS   ", true), 10,
+                       "an operating system, running on the hardware",
+                       col_accent, true);
 
             for (int i = 0; i < window_count; i++) {
                 if (!windows[i].visible)

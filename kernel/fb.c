@@ -311,3 +311,135 @@ void fb_write_rect(int x, int y, int w, int h, const uint32_t *src)
 
     fb_mark_dirty(x, y, w, h);
 }
+
+/* ---- anti-aliased text ----------------------------------------------------
+ *
+ * The atlases in font_atlas.c store coverage rather than on/off pixels: how
+ * much of each pixel the glyph covers, 0 to 255. Drawing a glyph therefore
+ * means blending the text colour into what is already there in proportion to
+ * that coverage, which is what puts soft grey along the diagonal of an 'A'
+ * instead of a staircase.
+ *
+ * That is the whole difference between text that looks like a modern desktop
+ * and text that looks like a terminal from 1985. It costs one multiply per
+ * channel per pixel, which is why the render loop had to stop repainting the
+ * screen on every mouse movement first -- doing this work on every frame
+ * would have been slower than the bitmap font it replaces.
+ */
+
+extern const unsigned char font_mono[95][176];
+extern const unsigned char font_mono_adv[95];
+extern const int font_mono_w, font_mono_h;
+
+extern const unsigned char font_ui[95][288];
+extern const unsigned char font_ui_adv[95];
+extern const int font_ui_w, font_ui_h;
+
+/* Blend src over dst by coverage. The divide by 255 is approximated with a
+ * shift: exact division per channel per pixel is not worth it when the error
+ * is under one part in 256 and invisible. */
+static uint32_t blend(uint32_t dst, uint32_t src, uint32_t a)
+{
+    if (a == 0)   return dst;
+    if (a >= 255) return src;
+
+    uint32_t inv = 255 - a;
+
+    uint32_t dr = (dst >> r_shift) & 0xFF;
+    uint32_t dg = (dst >> g_shift) & 0xFF;
+    uint32_t db = (dst >> b_shift) & 0xFF;
+
+    uint32_t sr = (src >> r_shift) & 0xFF;
+    uint32_t sg = (src >> g_shift) & 0xFF;
+    uint32_t sb = (src >> b_shift) & 0xFF;
+
+    uint32_t r = (sr * a + dr * inv + 128) >> 8;
+    uint32_t g = (sg * a + dg * inv + 128) >> 8;
+    uint32_t b = (sb * a + db * inv + 128) >> 8;
+
+    return (r << r_shift) | (g << g_shift) | (b << b_shift);
+}
+
+void fb_blend_rect(int x, int y, int w, int h, uint32_t colour, uint32_t alpha)
+{
+    if (!ready || alpha == 0)
+        return;
+
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > (int)width  ? (int)width  : x + w;
+    int y1 = y + h > (int)height ? (int)height : y + h;
+
+    for (int yy = y0; yy < y1; yy++) {
+        uint32_t *row = &back[yy * (int)width];
+        for (int xx = x0; xx < x1; xx++)
+            row[xx] = blend(row[xx], colour, alpha);
+    }
+
+    fb_mark_dirty(x0, y0, x1 - x0, y1 - y0);
+}
+
+int fb_char_aa(int x, int y, char c, uint32_t colour, bool ui)
+{
+    if (!ready)
+        return 0;
+
+    if (c < 32 || c > 126)
+        c = '?';
+
+    int idx = c - 32;
+
+    const unsigned char *glyph = ui ? font_ui[idx]  : font_mono[idx];
+    int cw   = ui ? font_ui_w   : font_mono_w;
+    int ch   = ui ? font_ui_h   : font_mono_h;
+    int adv  = ui ? font_ui_adv[idx] : font_mono_adv[idx];
+
+    for (int row = 0; row < ch; row++) {
+        int yy = y + row;
+        if (yy < 0 || yy >= (int)height)
+            continue;
+
+        uint32_t *line = &back[yy * (int)width];
+        const unsigned char *cov = &glyph[row * cw];
+
+        for (int col = 0; col < cw; col++) {
+            uint32_t a = cov[col];
+            if (a == 0)
+                continue;           /* most of a glyph cell is empty */
+
+            int xx = x + col;
+            if (xx >= 0 && xx < (int)width)
+                line[xx] = blend(line[xx], colour, a);
+        }
+    }
+
+    fb_mark_dirty(x, y, cw, ch);
+    return adv;
+}
+
+int fb_text_aa(int x, int y, const char *s, uint32_t colour, bool ui)
+{
+    int start = x;
+
+    while (*s)
+        x += fb_char_aa(x, y, *s++, colour, ui);
+
+    return x - start;
+}
+
+int fb_text_width(const char *s, bool ui)
+{
+    int w = 0;
+
+    while (*s) {
+        char c = *s++;
+        if (c < 32 || c > 126)
+            c = '?';
+        w += ui ? font_ui_adv[c - 32] : font_mono_adv[c - 32];
+    }
+
+    return w;
+}
+
+int fb_font_height(bool ui) { return ui ? font_ui_h : font_mono_h; }
+int fb_mono_advance(void)   { return font_mono_adv['M' - 32]; }
