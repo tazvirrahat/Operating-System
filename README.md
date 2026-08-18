@@ -26,6 +26,9 @@ There is no operating system underneath it. No standard library, no `printf`, no
 | **Virtual memory** | Paging with mixed 4 KB / 4 MB pages, page 0 left unmapped so null dereferences fault. |
 | **Privilege separation** | Ring 3 user tasks that can only reach the kernel through `int 0x80`. |
 | **Fault containment** | A faulting task is killed; the kernel and shell keep running. |
+| **Device drivers** | Interrupt-driven PS/2 mouse with the IntelliMouse wheel extension, CMOS real-time clock, PCI bus enumeration, and a VMware SVGA-II framebuffer driver. |
+| **Graphics and windowing** | 1920x1080 32-bit framebuffer with dirty-rectangle updates, anti-aliased text, draggable windows, a taskbar and Start menu, and a terminal with scrollback. |
+| **Filesystem** | A flat in-memory namespace with create, read, write, append and delete, growable allocations, and per-file timestamps from the RTC. |
 
 ## Running it
 
@@ -44,7 +47,7 @@ On Windows there is a wrapper (a .cmd file, so PowerShell's execution policy doe
 
 Then type `demo` for a guided tour, or `help` for the full command list. The up and down arrows recall previous commands.
 
-The 16 commands are: `help`, `demo`, `selftest`, `spawn`, `bg`, `preempt`, `race`, `prodcons`, `fault`, `user`, `tasks`, `top`, `meminfo`, `uptime`, `echo`, `clear`.
+The 25 commands are: `help`, `demo`, `selftest`, `spawn`, `bg`, `preempt`, `race`, `prodcons`, `fault`, `user`, `tasks`, `top`, `meminfo`, `uptime`, `date`, `echo`, `clear`, `gui`, `lspci`, `gpuinfo`, `gputest`, and the filesystem set `ls`, `cat`, `write`, `append`, `rm`, plus `wallpaper`.
 
 | Target | What it does |
 |---|---|
@@ -94,7 +97,7 @@ AABBCCAABBBCCCAABBCC...            switching resumes
   run 2: 100      ... all exact
 ```
 
-`selftest` runs all 22 checks and reports pass/fail. `make test` runs it headless and fails the build on any failure.
+`selftest` runs all 30 checks and reports pass/fail. `make test` runs it headless and fails the build on any failure.
 
 ![self-test output](docs/images/01-selftest.png)
 
@@ -118,6 +121,10 @@ AABBCCAABBBCCCAABBCC...            switching resumes
 
 **Privilege.** User tasks enter ring 3 through an `iret` with a hand-built frame. Once there the CPU refuses privileged instructions, and the only route back into the kernel is `int 0x80` — the single IDT gate with DPL 3.
 
+**Graphics.** GRUB is asked for a linear framebuffer in the multiboot header and reports back its address, pitch and depth. Drawing goes to a back buffer in the heap and only the changed rectangle is copied forward, because copying all 8.3 MB of a 1920x1080 frame on every mouse movement is what turns a window manager into a slideshow. Text is anti-aliased from greyscale coverage atlases baked at build time, so the font is real glyph shapes rather than a bitmap grid.
+
+**Filesystem.** Names map to heap allocations that grow by doubling when appended to. There is no disk under it, which the header says outright; what is above the block layer — the namespace, the allocation and release of file storage, the metadata — is the part that is actually a filesystem, and it is all here.
+
 ## Deliberately not built
 
 Naming what was left out, and why, is part of the design:
@@ -126,8 +133,8 @@ Naming what was left out, and why, is part of the design:
 |---|---|
 | **Custom bootloader** | GRUB handles it. Writing one teaches legacy BIOS trivia, not OS concepts. |
 | **64-bit long mode** | Requires paging before any output is possible, which forces the hardest component first for no conceptual gain. |
-| **Filesystem** | Needs a disk driver plus a FAT implementation. It is a data structure, not an OS concept — weak return per hour. |
-| **GUI / windowing** | Needs a USB host stack for mouse input on real hardware (~10,000 lines before anything appears). |
+| **Persistent storage** | The filesystem that exists keeps its files in the heap. Putting them on a disk means an ATA or AHCI driver and then a partition table and an on-disk format on top — a block layer, not a filesystem concept, and none of it changes what the namespace above it does. |
+| **USB input** | The mouse and keyboard are PS/2, which every virtual machine emulates. Real hardware without a PS/2 controller would need a USB host stack, and that is a project rather than a feature. |
 | **Web browser** | Needs, in order: USB stack, network driver, TCP/IP (~40k lines), TLS (~100k lines), HTTP, then HTML/CSS/JS engines. The dependency chain is the obstacle, not the rendering. |
 | **SMP** | Requires APIC, per-core stacks and locking throughout. |
 
@@ -136,6 +143,7 @@ Naming what was left out, and why, is part of the design:
 - **Memory is not isolated between ring 0 and ring 3.** The whole first 4 MB is marked user-accessible, so a ring 3 task could read kernel memory. What *is* enforced is instruction privilege: user code cannot perform port I/O or execute privileged instructions. Separating them properly would mean giving user code its own linker section on its own pages.
 - **Syscall arguments are not validated.** `SYS_WRITE` dereferences a user-supplied pointer without checking it.
 - **The scheduler is round-robin only** — no priorities, no aging, no blocking wait queues (`sem_wait` yields in a loop rather than sleeping).
+- **Files do not survive a reboot.** They live in the heap; see the note on persistent storage above.
 - **The race-variance self-test is statistical** and could in principle flake, since how many updates are lost depends on where preemption lands.
 
 ## Project structure
@@ -156,19 +164,30 @@ kernel/
   pic.c         8259 remap
   pit.c         timer
   keyboard.c    PS/2 scancode decoding
+  mouse.c       PS/2 mouse, IntelliMouse wheel extension
+  rtc.c         CMOS real-time clock
+  pci.c         PCI bus enumeration
+  svga.c        VMware SVGA-II framebuffer and command FIFO
+  svga3d.c      the adapter's 3D pipeline, when it exposes one
   paging.c      page directory, MMU enable
   heap.c        kmalloc / kfree
   task.c        tasks and the scheduler
   sync.c        spinlock, mutex, semaphore
   string.c      memset/memcpy/strcmp/strtoul — no libc exists here
   syscall.c     int 0x80 dispatch, ring 3 entry
+  fb.c          framebuffer drawing, anti-aliased text, dirty rectangles
+  fbcon.c       text console on the framebuffer
+  font_atlas.c  generated glyph coverage atlases
+  gui.c         window manager, taskbar, Start menu, terminal
+  wallpaper.c   the desktop gradients
+  fs.c          the in-memory filesystem
   shell.c       interactive command loop
   monitor.c     live kernel display
   demos.c       the demonstrations
   selftest.c    automated verification
 ```
 
-Roughly 4,700 lines across 44 files.
+Roughly 9,250 hand-written lines across 66 files, plus a generated 3,450-line font atlas.
 
 ## Built with
 
@@ -187,8 +206,8 @@ A ready-made VMware configuration is in [`vmware/MyOS.vmx`](vmware/MyOS.vmx). Bu
 
 There is **no virtual disk attached**, so the guest has no writable storage — it boots from the ISO and runs entirely in RAM. Nothing on the host can be modified.
 
-The kernel probes for a serial port at startup and skips serial output if none answers, so it boots correctly whether or not one is configured. Verified both ways under QEMU: 22 self-tests pass with a serial port and with `-serial none`.
+The kernel probes for a serial port at startup and skips serial output if none answers, so it boots correctly whether or not one is configured. Verified both ways under QEMU: 30 self-tests pass with a serial port and with `-serial none`.
 
-**Confirmed working in VMware Workstation Pro** — all 22 self-tests pass, including ring 3 privilege separation and paging. Full boot transcript: [`docs/vmware-boot-log.txt`](docs/vmware-boot-log.txt).
+**Confirmed working in VMware Workstation Pro** — all 30 self-tests pass, including ring 3 privilege separation and paging. Full boot transcript: [`docs/vmware-boot-log.txt`](docs/vmware-boot-log.txt).
 
 Worth noting what this checks that an emulator does not: VMware runs guest instructions on the real CPU through hardware virtualisation rather than interpreting them. The descriptor tables, paging structures and privilege transitions are being consumed by actual silicon.

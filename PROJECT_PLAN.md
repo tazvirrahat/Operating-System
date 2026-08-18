@@ -13,7 +13,7 @@
 
 > ## Status: Tier 1, Tier 2 and Tier 3 complete
 >
-> Every item in §6 is done except booting on real hardware. That includes both Tier 3 stretch features (ring 3 with system calls, and paging) and the remaining nice-to-haves (producer/consumer, command history). The kernel boots, runs 22 self-test checks, and drops into a shell with 16 commands. See [`README.md`](README.md) for what it does and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3 for the real bugs hit on the way.
+> Every item in §6 is done except booting on real hardware. That includes both Tier 3 stretch features (ring 3 with system calls, and paging) and the remaining nice-to-haves (producer/consumer, command history). The kernel boots, runs 30 self-test checks, and drops into a shell with 25 commands. See [`README.md`](README.md) for what it does and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §3 for the real bugs hit on the way.
 >
 > **Not done:** booting on real hardware (§3, Tier 3 item 21). It has only ever run under QEMU.
 >
@@ -426,7 +426,7 @@ Tier 1 + Tier 2 is **~40 hours**. At 1 hour/day for 10 days, one person has **10
 - [x] Mutex — race demo fails without it, passes with it, across repeated runs
 - [x] Shell with ≥8 working commands — 15 implemented
 - [x] `top` monitor reading live kernel state
-- [x] `demo` and `selftest` commands — 22 checks
+- [x] `demo` and `selftest` commands — 30 checks
 - [x] `make run` works from a clean clone
 - [x] README with build instructions, architecture notes, and screenshots
 - [x] [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) complete

@@ -29,7 +29,7 @@ The system demonstrates the core concerns of an operating system:
 
 Interaction is through a shell rendered in VGA text mode, with a live kernel monitor and a `selftest` command running 21 automated checks.
 
-Roughly 4,700 lines across 44 files.
+Roughly 9,250 hand-written lines across 66 files, plus a generated 3,450-line font atlas.
 
 ### 1.1 Architecture decision
 
@@ -98,7 +98,16 @@ console (VGA + serial)   output first: nothing after this is debuggable without 
 | Scheduler | `task.c` | Round-robin, preemptive, stack guard words, reaping |
 | Synchronisation | `sync.c` | Spinlock, mutex, semaphore, atomic `xchg` |
 | System calls | `syscall.c` | `int 0x80`, DPL 3 gate, ring 3 entry via `iret` |
-| Shell | `shell.c` | 16 commands, tokeniser, dispatch table, 16-entry command history |
+| Mouse | `mouse.c` | PS/2, IRQ 12, packet resynchronisation, IntelliMouse wheel extension |
+| Real-time clock | `rtc.c` | CMOS, BCD and 12-hour handling, reads twice to avoid a mid-update value |
+| PCI | `pci.c` | Configuration-space enumeration over ports `0xCF8`/`0xCFC` |
+| Graphics adapter | `svga.c`, `svga3d.c` | VMware SVGA-II registers and command FIFO; 3D pipeline when exposed |
+| Framebuffer | `fb.c` | 32-bit drawing, alpha blending, rounded rectangles, shadows, dirty rectangles |
+| Anti-aliased text | `font_atlas.c`, `fbcon.c` | Greyscale coverage atlases baked at build time from a TrueType face |
+| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback |
+| Wallpaper | `wallpaper.c` | Five interpolated gradients with an optional vignette |
+| Filesystem | `fs.c` | Flat namespace, growable heap-backed files, RTC timestamps |
+| Shell | `shell.c` | 25 commands, tokeniser, dispatch table, 16-entry command history |
 | Utilities | `string.c` | `memset`/`memcpy`/`strcmp`/`strtoul`; gcc emits calls to some of these regardless of `-fno-builtin` |
 | Monitor | `monitor.c` | Live task/heap/IRQ display |
 | Demos, self-test | `demos.c`, `selftest.c` | Shared by the shell and the automated checks |
@@ -308,7 +317,7 @@ Two things make this worth recording. First, the bug was found by a feature rath
 
 We added a UART loopback probe at startup — put the chip in loopback, write a byte, check the same byte returns — and bounded the transmit wait. A missing port now disables serial output rather than blocking on it.
 
-**Result.** The kernel boots identically with and without a UART, verified both ways under QEMU: 22 self-tests pass and the screen output is identical. Dropping debug output when the hardware is absent is survivable; hanging to deliver it is not.
+**Result.** The kernel boots identically with and without a UART, verified both ways under QEMU: 30 self-tests pass and the screen output is identical. Dropping debug output when the hardware is absent is survivable; hanging to deliver it is not.
 
 The method is worth noting as much as the fix. Rather than testing the same configuration again, we asked what QEMU was being *forgiving* about — which is where the defects that only appear on real hardware live.
 
@@ -326,7 +335,101 @@ The method is worth noting as much as the fix. Rather than testing the same conf
 
 ---
 
-### 3.16 *(Add anything else you hit)*
+### 3.16 A window manager that redrew eight megabytes to move a mouse
+
+**Situation.** The first working desktop was unusable. The pointer lagged several centimetres behind the mouse, and typing produced characters a visible moment after the key.
+
+**Task.** The render loop began each frame by filling the whole screen, then redrew the wallpaper, every window and the cursor, before copying the entire back buffer forward.
+
+**Action.** At 1920x1080 and four bytes per pixel a frame is 8.3 megabytes. Redrawing and then copying that on every mouse interrupt is roughly 1.6 gigabytes a second of memory traffic to move a pointer a few pixels. The machine was not slow; it was being asked to do an enormous amount of pointless work.
+
+Two changes fixed it. The scene is now rebuilt only when something in it actually changed, tracked by a separate `scene_dirty` flag from the per-frame `dirty` rectangle, and a mouse movement alone does not qualify. And the cursor no longer forces a redraw at all: the pixels underneath it are saved before it is drawn and put back before it moves, so erasing it costs one small rectangle rather than a whole frame.
+
+**Result.** Pointer movement now touches two cursor-sized rectangles instead of the screen. The desktop is responsive at 1920x1080, and the lesson generalises: the expensive operation was not drawing, it was drawing things that had not changed.
+
+---
+
+### 3.17 A cursor that flickered because the frame was correct twice
+
+**Situation.** With the redraw fixed, the pointer left a faint flicker along its path.
+
+**Task.** The loop erased the cursor from its old position, presented, drew it at the new position, and presented again.
+
+**Action.** Presenting between the erase and the redraw seemed tidier, because it keeps each dirty rectangle small when the pointer jumps a long way. But it puts a frame on the screen in which the cursor does not exist. At sixty frames a second that intermediate frame is displayed long enough to be seen, and a cursor that vanishes and reappears reads as a flicker.
+
+The fix was to remove work rather than add it: erase, redraw, and present once, covering both positions in a single rectangle.
+
+**Result.** No flicker. Each frame is occasionally a slightly larger copy and is never in a half-drawn state. A frame that is individually correct can still be wrong to display, which is not obvious until it is on a screen.
+
+---
+
+### 3.18 A command that appeared to hang, and one that appeared to do nothing
+
+**Situation.** Two complaints about the graphical terminal arrived together: typing `demo` froze the window until the demonstration finished, and at the very first prompt the characters being typed did not appear at all.
+
+**Task.** Both symptoms came from the same place, when output reaches the screen, but from opposite ends of it.
+
+**Action.** The shell's dispatch runs synchronously inside the render loop, so a command that takes seconds blocks every frame in between. Its output was accumulating in the terminal buffer and arriving all at once at the end, which is indistinguishable from a hang. The terminal now flushes and presents on every newline, so a long-running command shows its output as it produces it.
+
+The invisible typing was the same mechanism inverted: the framebuffer console only presented on a newline, so a line being typed sat in the back buffer, correct and unseen, until Enter was pressed. It now presents on every character.
+
+**Result.** Long commands visibly progress and typed characters appear as they are typed. Worth recording: neither was a bug in the code that produced the output. Both were about when the back buffer reached the screen, and neither would have been found by reading the shell.
+
+---
+
+### 3.19 A performance fix that broke the keyboard
+
+**Situation.** Immediately after splitting the redraw into `scene_dirty` and `dirty`, the keyboard became laggy. A keystroke appeared only when the mouse was moved or the clock ticked.
+
+**Task.** The split had been made to stop the mouse forcing a full redraw. The keyboard handler was updated at the same time.
+
+**Action.** The handler set `dirty` but not `scene_dirty`. Under the old single-flag loop that had been enough; under the new one it asked for a present without asking for the scene to be rebuilt, so the character was never drawn. It appeared later only because some other event set `scene_dirty` and redrew everything, including the new text.
+
+**Result.** One added line. The point is the shape of the mistake rather than its size: an optimisation that splits one piece of state into two silently changes the meaning of every existing write to it, and the compiler cannot help, because both names still exist and both still type-check.
+
+---
+
+### 3.20 A mouse with no scroll wheel
+
+**Situation.** Scrolling the terminal with the mouse wheel did nothing, although scrolling by keyboard worked.
+
+**Task.** The PS/2 mouse driver decoded the standard three-byte packet: buttons and flags, then relative X, then relative Y. There is no wheel field in it.
+
+**Action.** The wheel is not part of the original PS/2 mouse protocol, and there is no command that asks for it. The extension is unlocked by a knock: set the sample rate to 200, then 100, then 80, in exactly that order. A mouse that recognises the sequence begins reporting device ID 3 instead of 0 and starts sending a fourth byte whose low nibble is a signed four-bit wheel movement. One that does not recognise it simply stays in the three-byte protocol, which is what makes the sequence safe to attempt blindly.
+
+The driver performs the knock, asks for the device ID, and sets its packet size to four only if the answer is 3. The size has to be settled before any packet is decoded, or the byte stream desynchronises and the cursor moves in the wrong axis.
+
+**Result.** The wheel scrolls the terminal's scrollback. This is a good example of a hardware interface that cannot be derived from first principles: no amount of reasoning about the three-byte packet produces the idea of setting the sample rate three times. It can only come from the documentation.
+
+---
+
+### 3.21 A filesystem whose every allocation returned null
+
+**Situation.** The filesystem was added and immediately failed. No file could be created, and the two pre-seeded files were absent.
+
+**Task.** Its initialiser had been placed in the bring-up sequence next to the other device initialisers, before the heap was set up.
+
+**Action.** Files store their contents in heap memory, so the initialiser calls `kmalloc`, and `kmalloc` before `heap_init` has no memory to hand out and correctly returns null every time. The failure was not in the filesystem at all. It was the order of two lines in `kmain`.
+
+The initialisation order in `kmain` is a dependency graph written out as a sequence, and it now says so in a comment at each point where the order is load-bearing rather than incidental: the filesystem after the heap because it allocates, and after the real-time clock because it timestamps.
+
+**Result.** The filesystem works. The general lesson is that a kernel has no runtime to catch this. There is no module system and no initialisation-order checking; a subsystem used before it is ready does not raise an error, it returns zeroes.
+
+---
+
+### 3.22 Capability bits read against the wrong revision of a specification
+
+**Situation.** The graphics adapter reported a capability word of `0x03`, and the driver concluded it supported neither of the two features it had checked for.
+
+**Task.** The driver tested for the cursor and extended-FIFO capabilities using bit values taken from a published register reference.
+
+**Action.** The values used, `0x10` and `0x20`, are from a later revision of the specification. In the legacy layout this adapter implements, those two capabilities are bits `0x01` and `0x02`, which are exactly the two bits that were set. The driver was reading a correct answer and rejecting it, because a hardware register only means something relative to the version of the interface it belongs to.
+
+**Result.** The correct bits identify both capabilities, and the extended FIFO is used. The broader observation is that this class of defect reads as a hardware limitation rather than a software one. The adapter appeared not to support the features, and that is a conclusion which invites working around it instead of rechecking the constant.
+
+---
+
+### 3.23 *(Add anything else you hit)*
 
 **Situation.**
 **Task.**
@@ -353,13 +456,21 @@ All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus bo
 - Bounded-buffer producer/consumer: 24 items through 4 slots, both sides blocking
 - Ring 3 tasks with `int 0x80` system calls
 - Faults contained: the offending task dies, the kernel and shell continue
-- Shell with 16 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
+- Shell with 25 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
+- PCI bus enumeration, and a VMware SVGA-II driver using the adapter's command FIFO
+- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, and a terminal with mouse-wheel scrollback
+- Anti-aliased text rendered from greyscale coverage atlases generated at build time
+- An in-memory filesystem with create, read, write, append and delete, growable allocations, and per-file timestamps
 - Atomic console output: `kprintf` defers preemption so concurrent tasks cannot splice each other's lines
 - `make run`, `make test` and `make debug` from a clean clone
 
 ### 4.2 What does not work
 
 The limitations in §1.3 are the honest list: memory is not isolated between rings, syscall pointers are unvalidated, the scheduler has no priorities, and the race-variance check is statistical. None of these were discovered late; all are consequences of scope decisions.
+
+The filesystem keeps its files in the heap, so nothing survives a reboot. That is a missing block layer rather than a missing filesystem: putting the same namespace on a disk needs an ATA or AHCI driver underneath it and a partition table and on-disk format on top, none of which changes what the layer above does.
+
+The 3D pipeline is the one feature that was implemented and could not be demonstrated. The driver is complete and the adapter advertises the 3D capability bit, but it reports a 3D hardware version of zero, which is the adapter's way of saying the host will not expose the pipeline to this guest. The driver correctly declines rather than issuing commands into a FIFO that will not execute them. 2D acceleration through the same command FIFO does work and is measurable.
 
 One further note: booting on real hardware (Tier 3 item 21) was **not attempted**. The kernel is built as a GRUB rescue ISO and should boot from a USB stick on a BIOS or CSM-enabled machine, but this has only ever run under QEMU. Claiming it works on real hardware without having tried it would be exactly the kind of unverified assertion this report tries to avoid.
 
@@ -388,7 +499,7 @@ Printed output proves nothing on its own — a single loop emitting `A B A B` is
 | Ring 3 | Hardware value | Saved `CS` reads `0x1B` — low two bits are the privilege level | PASS |
 | Ring 3 | Ablation | Direct port I/O raises a GPF; the same task via syscall succeeds | PASS, both |
 
-**Automated:** `selftest` runs 22 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
+**Automated:** `selftest` runs 30 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
 
 **Screenshots** captured headlessly via QEMU's `screendump` are in [`docs/images/`](docs/images/).
 

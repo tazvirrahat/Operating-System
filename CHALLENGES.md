@@ -13,9 +13,9 @@ Each challenge below is described in STAR format:
 - **Action** — what we did to address the issue
 - **Result** — the outcome of our action
 
-Fourteen technical challenges are recorded, in the order they were encountered. Each is traceable to the commit that resolved it.
+Twenty-two technical challenges are recorded, in the order they were encountered. Each is traceable to the commit that resolved it.
 
-A theme runs through most of them and is worth stating first: **on bare metal, "it compiled" tells you almost nothing about whether the program is correct.** There is no operating system, no loader and no runtime beneath this code, so the layout of the binary, the ordering of hardware operations, and whatever the optimiser decided to do with your source are all part of correctness. Four of the fourteen were introduced by a tool doing exactly what it was asked, in a context where nothing existed to catch the consequences.
+A theme runs through most of them and is worth stating first: **on bare metal, "it compiled" tells you almost nothing about whether the program is correct.** There is no operating system, no loader and no runtime beneath this code, so the layout of the binary, the ordering of hardware operations, and whatever the optimiser decided to do with your source are all part of correctness. Four of them were introduced by a tool doing exactly what it was asked, in a context where nothing existed to catch the consequences, and two more by a register or a protocol meaning something other than what the documentation to hand said it meant.
 
 ---
 
@@ -183,7 +183,7 @@ A theme runs through most of them and is worth stating first: **on bare metal, "
 
 **Action.** VMware does not give a virtual machine a serial port unless one is explicitly configured, and most modern PCs have no physical serial port at all. Reading a port that does not exist returns whatever the bus happens to float to — commonly all ones, which coincidentally looks like "ready", but zero on some hardware, which looks permanently busy. In that case the loop never exits and the kernel hangs inside its very first print, before anything reaches the screen: a black display with no diagnostic whatsoever, which is the hardest failure imaginable to work backwards from. We added a startup probe that puts the port into loopback mode, writes a byte and checks whether the same byte comes back — a real chip returns it, an absent one does not — and made the transmit loop give up after a bounded number of attempts.
 
-**Result.** The kernel now boots identically with and without a serial port, verified by running it both ways: 22 self-tests pass in each case and the screen output is identical. Dropping debug output when the hardware is missing is survivable; hanging the kernel in order to deliver it is not. We found this by asking what our emulator was being forgiving about, which turned out to be a more productive question than testing the same configuration again.
+**Result.** The kernel now boots identically with and without a serial port, verified by running it both ways: 30 self-tests pass in each case and the screen output is identical. Dropping debug output when the hardware is missing is survivable; hanging the kernel in order to deliver it is not. We found this by asking what our emulator was being forgiving about, which turned out to be a more productive question than testing the same configuration again.
 
 ---
 
@@ -199,7 +199,101 @@ A theme runs through most of them and is worth stating first: **on bare metal, "
 
 ---
 
-## 16. *(Add any further challenges you encountered)*
+## 16. A window manager that redrew eight megabytes to move a mouse
+
+**Situation.** The first working desktop was unusable. The pointer lagged several centimetres behind the mouse, and typing produced characters a visible moment after the key.
+
+**Task.** The render loop began each frame by filling the whole screen, then redrew the wallpaper, every window and the cursor, before copying the entire back buffer forward.
+
+**Action.** At 1920x1080 and four bytes per pixel a frame is 8.3 megabytes. Redrawing and then copying that on every mouse interrupt is roughly 1.6 gigabytes a second of memory traffic to move a pointer a few pixels. The machine was not slow; it was being asked to do an enormous amount of pointless work.
+
+Two changes fixed it. The scene is now rebuilt only when something in it actually changed, tracked by a separate `scene_dirty` flag from the per-frame `dirty` rectangle, and a mouse movement alone does not qualify. And the cursor no longer forces a redraw at all: the pixels underneath it are saved before it is drawn and put back before it moves, so erasing it costs one small rectangle rather than a whole frame.
+
+**Result.** Pointer movement now touches two cursor-sized rectangles instead of the screen. The desktop is responsive at 1920x1080, and the lesson generalises: the expensive operation was not drawing, it was drawing things that had not changed.
+
+---
+
+## 17. A cursor that flickered because the frame was correct twice
+
+**Situation.** With the redraw fixed, the pointer left a faint flicker along its path.
+
+**Task.** The loop erased the cursor from its old position, presented, drew it at the new position, and presented again.
+
+**Action.** Presenting between the erase and the redraw seemed tidier, because it keeps each dirty rectangle small when the pointer jumps a long way. But it puts a frame on the screen in which the cursor does not exist. At sixty frames a second that intermediate frame is displayed long enough to be seen, and a cursor that vanishes and reappears reads as a flicker.
+
+The fix was to remove work rather than add it: erase, redraw, and present once, covering both positions in a single rectangle.
+
+**Result.** No flicker. Each frame is occasionally a slightly larger copy and is never in a half-drawn state. A frame that is individually correct can still be wrong to display, which is not obvious until it is on a screen.
+
+---
+
+## 18. A command that appeared to hang, and one that appeared to do nothing
+
+**Situation.** Two complaints about the graphical terminal arrived together: typing `demo` froze the window until the demonstration finished, and at the very first prompt the characters being typed did not appear at all.
+
+**Task.** Both symptoms came from the same place, when output reaches the screen, but from opposite ends of it.
+
+**Action.** The shell's dispatch runs synchronously inside the render loop, so a command that takes seconds blocks every frame in between. Its output was accumulating in the terminal buffer and arriving all at once at the end, which is indistinguishable from a hang. The terminal now flushes and presents on every newline, so a long-running command shows its output as it produces it.
+
+The invisible typing was the same mechanism inverted: the framebuffer console only presented on a newline, so a line being typed sat in the back buffer, correct and unseen, until Enter was pressed. It now presents on every character.
+
+**Result.** Long commands visibly progress and typed characters appear as they are typed. Worth recording: neither was a bug in the code that produced the output. Both were about when the back buffer reached the screen, and neither would have been found by reading the shell.
+
+---
+
+## 19. A performance fix that broke the keyboard
+
+**Situation.** Immediately after splitting the redraw into `scene_dirty` and `dirty`, the keyboard became laggy. A keystroke appeared only when the mouse was moved or the clock ticked.
+
+**Task.** The split had been made to stop the mouse forcing a full redraw. The keyboard handler was updated at the same time.
+
+**Action.** The handler set `dirty` but not `scene_dirty`. Under the old single-flag loop that had been enough; under the new one it asked for a present without asking for the scene to be rebuilt, so the character was never drawn. It appeared later only because some other event set `scene_dirty` and redrew everything, including the new text.
+
+**Result.** One added line. The point is the shape of the mistake rather than its size: an optimisation that splits one piece of state into two silently changes the meaning of every existing write to it, and the compiler cannot help, because both names still exist and both still type-check.
+
+---
+
+## 20. A mouse with no scroll wheel
+
+**Situation.** Scrolling the terminal with the mouse wheel did nothing, although scrolling by keyboard worked.
+
+**Task.** The PS/2 mouse driver decoded the standard three-byte packet: buttons and flags, then relative X, then relative Y. There is no wheel field in it.
+
+**Action.** The wheel is not part of the original PS/2 mouse protocol, and there is no command that asks for it. The extension is unlocked by a knock: set the sample rate to 200, then 100, then 80, in exactly that order. A mouse that recognises the sequence begins reporting device ID 3 instead of 0 and starts sending a fourth byte whose low nibble is a signed four-bit wheel movement. One that does not recognise it simply stays in the three-byte protocol, which is what makes the sequence safe to attempt blindly.
+
+The driver performs the knock, asks for the device ID, and sets its packet size to four only if the answer is 3. The size has to be settled before any packet is decoded, or the byte stream desynchronises and the cursor moves in the wrong axis.
+
+**Result.** The wheel scrolls the terminal's scrollback. This is a good example of a hardware interface that cannot be derived from first principles: no amount of reasoning about the three-byte packet produces the idea of setting the sample rate three times. It can only come from the documentation.
+
+---
+
+## 21. A filesystem whose every allocation returned null
+
+**Situation.** The filesystem was added and immediately failed. No file could be created, and the two pre-seeded files were absent.
+
+**Task.** Its initialiser had been placed in the bring-up sequence next to the other device initialisers, before the heap was set up.
+
+**Action.** Files store their contents in heap memory, so the initialiser calls `kmalloc`, and `kmalloc` before `heap_init` has no memory to hand out and correctly returns null every time. The failure was not in the filesystem at all. It was the order of two lines in `kmain`.
+
+The initialisation order in `kmain` is a dependency graph written out as a sequence, and it now says so in a comment at each point where the order is load-bearing rather than incidental: the filesystem after the heap because it allocates, and after the real-time clock because it timestamps.
+
+**Result.** The filesystem works. The general lesson is that a kernel has no runtime to catch this. There is no module system and no initialisation-order checking; a subsystem used before it is ready does not raise an error, it returns zeroes.
+
+---
+
+## 22. Capability bits read against the wrong revision of a specification
+
+**Situation.** The graphics adapter reported a capability word of `0x03`, and the driver concluded it supported neither of the two features it had checked for.
+
+**Task.** The driver tested for the cursor and extended-FIFO capabilities using bit values taken from a published register reference.
+
+**Action.** The values used, `0x10` and `0x20`, are from a later revision of the specification. In the legacy layout this adapter implements, those two capabilities are bits `0x01` and `0x02`, which are exactly the two bits that were set. The driver was reading a correct answer and rejecting it, because a hardware register only means something relative to the version of the interface it belongs to.
+
+**Result.** The correct bits identify both capabilities, and the extended FIFO is used. The broader observation is that this class of defect reads as a hardware limitation rather than a software one. The adapter appeared not to support the features, and that is a conclusion which invites working around it instead of rechecking the constant.
+
+---
+
+## 23. *(Add any further challenges you encountered)*
 
 **Situation.**
 

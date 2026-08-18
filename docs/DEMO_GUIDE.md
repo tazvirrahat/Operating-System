@@ -2,7 +2,7 @@
 
 Two parts: getting the kernel running in VMware, then what to actually show and say.
 
-> **Verified.** The kernel has been booted in VMware Workstation Pro and all 22 self-tests passed, including ring 3 and paging. The full boot transcript is saved at [`vmware-boot-log.txt`](vmware-boot-log.txt). The QEMU path in Part 4 also works, as a fallback.
+> **Verified.** The kernel has been booted in VMware Workstation Pro and all 30 self-tests passed, including ring 3 and paging. The full boot transcript is saved at [`vmware-boot-log.txt`](vmware-boot-log.txt). The QEMU path in Part 4 also works, as a fallback.
 
 ---
 
@@ -50,7 +50,7 @@ VirtualBox is a perfectly good substitute if VMware gives you trouble; the steps
 1. A GRUB menu flashes past (about 2 seconds)
 2. The MyOS banner, then subsystem initialisation lines
 3. **The self-test runs automatically** — around 20 lines of `[PASS]`, taking roughly 30–50 seconds
-4. `22 passed, 0 failed`
+4. `30 passed, 0 failed`
 5. The `>` prompt
 
 **Click inside the VM window to give it your keyboard. Press `Ctrl+Alt` to release it back to Windows.** This catches people out — if typing does nothing, you have not clicked in.
@@ -75,7 +75,7 @@ VirtualBox is a perfectly good substitute if VMware gives you trouble; the steps
 **Practical advice:**
 
 - **Do a full practice run before recording.** Know what you are typing next.
-- **Skip the boot self-test in the final cut.** It is 30–50 seconds of watching. Either start recording after the prompt appears, or trim it — but do show the `22 passed, 0 failed` line, because it is strong.
+- **Skip the boot self-test in the final cut.** It is 30–50 seconds of watching. Either start recording after the prompt appears, or trim it — but do show the `30 passed, 0 failed` line, because it is strong.
 - **Type `clear` between sections** so each demo starts on a clean screen.
 - **Aim for 2–3 minutes.** Nobody watches longer.
 - Record at the VM's native size. Text stays crisp; scaled-up text does not.
@@ -88,7 +88,7 @@ Each section below is one demo: the command, what appears, and the one sentence 
 
 ### The three-minute version
 
-If you only have time for three things, do **1, 3 and 5**. They cover scheduling, concurrency and privilege — the core of what an operating system is.
+If you only have time for three things, do **1, 3 and 5**. If the room wants to see something rather than read output, open with **10**. They cover scheduling, concurrency and privilege — the core of what an operating system is.
 
 ---
 
@@ -207,13 +207,43 @@ Then `bg stop` to end them.
 > selftest
 ```
 
-22 checks across every subsystem.
+30 checks across every subsystem.
 
-> "The kernel testing itself. Twenty-two checks — and importantly they do not just read back what the kernel printed. Each one either turns a mechanism off to prove it was load-bearing, or reads a value the CPU wrote."
+> "The kernel testing itself. Thirty checks — and importantly they do not just read back what the kernel printed. Each one either turns a mechanism off to prove it was load-bearing, or reads a value the CPU wrote."
+
+---
+
+### 10. The graphical desktop ★★
+
+```
+> gui
+```
+
+A 1920x1080 desktop: draggable windows, a taskbar with a working clock, a Start menu, and a terminal you can keep using. Drag a window by its title bar, scroll the terminal with the mouse wheel, and open **Start → Change wallpaper** a couple of times.
+
+> "This is the same kernel — the shell is now running inside a window it is also drawing. There is no graphics library underneath: the kernel asks GRUB for a linear framebuffer, and every pixel, every glyph and the mouse pointer are written by code in this repository."
+
+If asked why it does not lag: only the rectangle that changed is copied to the screen. Redrawing all 8.3 MB of the frame on every mouse movement was the first version, and it was unusable.
+
+### 11. The filesystem
+
+```
+> write notes.txt hello from my kernel
+> ls
+> cat notes.txt
+> append notes.txt and a second line
+> cat notes.txt
+> rm notes.txt
+> ls
+```
+
+> "A namespace mapping names to contents, with the storage allocated and released as files grow and are deleted. It is in memory rather than on a disk — there is no disk driver in this kernel, and the header says so. What is missing is the block layer underneath; everything that makes it a filesystem is here."
+
+Expect to be asked whether files survive a reboot. They do not, and the honest answer is better than a hedge: persistence needs an ATA driver and an on-disk format, which is a block layer rather than a filesystem concept.
 
 ### Closing line
 
-> "No operating system underneath any of this. It boots from GRUB, sets up its own descriptor tables, drives the hardware directly, and manages its own memory. About 4,700 lines."
+> "No operating system underneath any of this. It boots from GRUB, sets up its own descriptor tables, drives the hardware directly, manages its own memory, and draws its own desktop."
 
 ---
 
