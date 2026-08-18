@@ -8,6 +8,7 @@
 #include "console.h"
 #include "vga.h"
 #include "string.h"
+#include "fs.h"
 
 #include <stdbool.h>
 
@@ -241,6 +242,67 @@ static void test_protection(void)
           "ring 3 task killed for direct hardware access, kernel survived\n");
 }
 
+
+/* ---- filesystem --------------------------------------------------------- */
+
+static void test_fs(void)
+{
+    kprintf("FILESYSTEM\n");
+
+    int    files_before = fs_file_count();
+    heap_stats_t heap_before;
+    heap_get_stats(&heap_before);
+
+    CHECK(fs_create("selftest.txt") != 0 &&
+          fs_file_count() == files_before + 1,
+          "creating a file adds exactly one entry to the namespace\n");
+
+    /* Asking for the same name twice must give back the same file rather than
+     * a second one, or a namespace stops being a mapping. */
+    CHECK(fs_create("selftest.txt") == fs_find("selftest.txt") &&
+          fs_file_count() == files_before + 1,
+          "creating an existing name returns the same file, not a duplicate\n");
+
+    const char *body = "the quick brown fox";
+    fs_write("selftest.txt", body, 19);
+
+    const fs_file_t *f = fs_find("selftest.txt");
+    bool match = f && f->size == 19 && memcmp(f->data, body, 19) == 0;
+
+    CHECK(match, "contents read back byte for byte after a write\n");
+
+    /* Appending past the initial allocation forces the grow-and-copy path,
+     * which is where an off-by-one would corrupt the existing bytes. */
+    for (int i = 0; i < 200; i++)
+        fs_append("selftest.txt", "0123456789", 10);
+
+    f = fs_find("selftest.txt");
+    bool grew = f && f->size == 19 + 2000 &&
+                memcmp(f->data, body, 19) == 0 &&
+                memcmp(f->data + f->size - 10, "0123456789", 10) == 0;
+
+    CHECK(grew, "append grows the allocation without disturbing what was there "
+                "(%u bytes)\n", f ? f->size : 0);
+
+    CHECK(f && f->year >= 2000, "file carries a wall-clock timestamp (%02u:%02u %u)\n",
+          f ? f->hour : 0, f ? f->minute : 0, f ? f->year : 0);
+
+    CHECK(fs_find("no-such-file") == 0, "lookup of a missing name fails cleanly\n");
+
+    CHECK(fs_delete("selftest.txt") && fs_find("selftest.txt") == 0 &&
+          fs_file_count() == files_before,
+          "delete removes the entry and the namespace returns to its old size\n");
+
+    /* The point of the previous check is the namespace; this is the point of
+     * the storage. A filesystem that leaks its files' memory works exactly
+     * once. */
+    heap_stats_t heap_after;
+    heap_get_stats(&heap_after);
+
+    CHECK(heap_after.used_bytes == heap_before.used_bytes,
+          "deleted file's storage returned to the heap (%u bytes before and after)\n",
+          heap_after.used_bytes);
+}
 /* ---- entry point -------------------------------------------------------- */
 
 int selftest_run(void)
@@ -254,6 +316,7 @@ int selftest_run(void)
     test_scheduler();
     test_sync();
     test_protection();
+    test_fs();
 
     kprintf("\n");
     if (failed == 0)

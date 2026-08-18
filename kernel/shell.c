@@ -14,6 +14,9 @@
 #include "pci.h"
 #include "svga.h"
 #include "fb.h"
+#include "fs.h"
+#include "rtc.h"
+#include "wallpaper.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -455,6 +458,145 @@ static void cmd_gputest(int argc, char **argv)
     kprintf("  six words in a queue the adapter reads.\n\n");
 }
 
+static void cmd_ls(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    kprintf("\n %-24s %8s  %s\n", "NAME", "SIZE", "MODIFIED");
+
+    for (int i = 0; i < FS_MAX_FILES; i++) {
+        const fs_file_t *f = fs_at(i);
+        if (!f)
+            continue;
+
+        kprintf(" %-24s %8u  %02u:%02u %02u %s %u\n",
+                f->name, f->size, f->hour, f->minute,
+                f->day, rtc_month_name(f->month), f->year);
+    }
+
+    kprintf("\n %d file%s, %u bytes used\n\n",
+            fs_file_count(), fs_file_count() == 1 ? "" : "s", fs_bytes_used());
+}
+
+static void cmd_cat(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("usage: cat <file>\n");
+        return;
+    }
+
+    const fs_file_t *f = fs_find(argv[1]);
+    if (!f) {
+        kprintf("cat: %s: no such file\n", argv[1]);
+        return;
+    }
+
+    kprintf("\n");
+    for (uint32_t i = 0; i < f->size; i++)
+        kputc((char)f->data[i]);
+    kprintf("\n");
+}
+
+static void cmd_write(int argc, char **argv)
+{
+    if (argc < 3) {
+        kprintf("usage: write <file> <text...>\n");
+        kprintf("  replaces the file's contents. use 'append' to add to it.\n");
+        return;
+    }
+
+    /* Rebuild the text from the tokens, since the tokeniser split on spaces
+     * and the words are what the user typed. */
+    char buf[512];
+    int  n = 0;
+
+    for (int i = 2; i < argc && n < (int)sizeof(buf) - 2; i++) {
+        const char *w = argv[i];
+        while (*w && n < (int)sizeof(buf) - 2)
+            buf[n++] = *w++;
+        if (i + 1 < argc)
+            buf[n++] = ' ';
+    }
+    buf[n++] = '\n';
+
+    if (fs_write(argv[1], buf, (uint32_t)n))
+        kprintf("wrote %d bytes to %s\n", n, argv[1]);
+    else
+        kprintf("write: failed (table full, or file too large)\n");
+}
+
+static void cmd_append(int argc, char **argv)
+{
+    if (argc < 3) {
+        kprintf("usage: append <file> <text...>\n");
+        return;
+    }
+
+    char buf[512];
+    int  n = 0;
+
+    for (int i = 2; i < argc && n < (int)sizeof(buf) - 2; i++) {
+        const char *w = argv[i];
+        while (*w && n < (int)sizeof(buf) - 2)
+            buf[n++] = *w++;
+        if (i + 1 < argc)
+            buf[n++] = ' ';
+    }
+    buf[n++] = '\n';
+
+    if (fs_append(argv[1], buf, (uint32_t)n))
+        kprintf("appended %d bytes to %s\n", n, argv[1]);
+    else
+        kprintf("append: failed\n");
+}
+
+static void cmd_rm(int argc, char **argv)
+{
+    if (argc < 2) {
+        kprintf("usage: rm <file>\n");
+        return;
+    }
+
+    if (fs_delete(argv[1]))
+        kprintf("removed %s\n", argv[1]);
+    else
+        kprintf("rm: %s: no such file\n", argv[1]);
+}
+
+static void cmd_wallpaper(int argc, char **argv)
+{
+    if (argc > 1) {
+        const char *end;
+        int n = (int)strtoul(argv[1], &end);
+
+        if (n < 1 || n > WALLPAPER_COUNT) {
+            kprintf("wallpaper: pick 1-%d\n", WALLPAPER_COUNT);
+            return;
+        }
+
+        wallpaper_set(n - 1);
+    } else {
+        wallpaper_next();
+    }
+
+    kprintf("wallpaper: %s (%d of %d)\n",
+            wallpaper_name(wallpaper_current()),
+            wallpaper_current() + 1, WALLPAPER_COUNT);
+    kprintf("visible in graphical mode - run 'gui'\n");
+}
+
+static void cmd_date(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+
+    rtc_time_t now;
+    rtc_read(&now);
+
+    kprintf("%02u:%02u:%02u  %u %s %u\n",
+            now.hour, now.minute, now.second,
+            now.day, rtc_month_name(now.month), now.year);
+}
+
 static void cmd_gui(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -554,6 +696,13 @@ static const command_t commands[] = {
     { "lspci",    "lspci [n]",        "devices found on the pci bus",              cmd_lspci    },
     { "gpuinfo",  "gpuinfo",          "graphics adapter and acceleration",         cmd_gpuinfo  },
     { "gputest",  "gputest",          "benchmark cpu fills against gpu fills",      cmd_gputest  },
+    { "ls",       "ls",               "list files",                                cmd_ls       },
+    { "cat",      "cat <file>",       "print a file",                              cmd_cat      },
+    { "write",    "write <f> <text>", "replace a file's contents",                 cmd_write    },
+    { "append",   "append <f> <txt>", "add to a file",                             cmd_append   },
+    { "rm",       "rm <file>",        "delete a file",                             cmd_rm       },
+    { "wallpaper","wallpaper [1-5]",  "change the desktop background",             cmd_wallpaper},
+    { "date",     "date",             "wall-clock time from the cmos chip",        cmd_date     },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },
     { "echo",     "echo <text>",      "print arguments",                           cmd_echo     },
     { "clear",    "clear",            "clear the screen",                          cmd_clear    },

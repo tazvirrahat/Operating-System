@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "pci.h"
 #include "rtc.h"
+#include "fs.h"
 #include "svga.h"
 #include "svga3d.h"
 #include "heap.h"
@@ -95,6 +96,11 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
     /* Page-align the heap so it never shares a page with kernel data. */
     uint32_t heap_start = ((uint32_t)&kernel_end + 0xFFF) & ~0xFFFU;
     heap_init(heap_start, HEAP_SIZE);
+
+    /* The filesystem stores file contents in the heap, so it cannot come up
+     * before the heap exists. It also stamps each file with the wall-clock
+     * time, which is why the RTC is initialised earlier. */
+    fs_init();
 
     /* Now that memory is mapped and allocatable, bring up the framebuffer and
      * move the console onto it. Everything printed before this point went to
