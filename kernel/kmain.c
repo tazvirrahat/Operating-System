@@ -15,6 +15,7 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "pci.h"
+#include "rtc.h"
 #include "svga.h"
 #include "svga3d.h"
 #include "heap.h"
@@ -73,6 +74,7 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
     /* Everything above lives at an address fixed since the original PC.
      * Anything newer has to be discovered. */
     pci_init();
+    rtc_init();     /* wall-clock time, which the PIT cannot provide */
 
     /* Paging goes after the IDT so that a page fault has somewhere to land,
      * and before the heap so that heap memory is mapped from the start.

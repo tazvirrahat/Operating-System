@@ -9,6 +9,7 @@
 #include "task.h"
 #include "heap.h"
 #include "pit.h"
+#include "rtc.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -338,7 +339,7 @@ static void draw_taskbar(void)
     /* One button per window. Width is divided from the space that is actually
      * left, rather than assumed, so the labels never run into the clock. */
     int first = sw + 16;
-    int clock_w = 9 * CHROME_W;
+    int clock_w = 13 * CHROME_W;
     int avail = SCR_W - first - clock_w - 16;
     int bw = avail / MAX_WINDOWS;
 
@@ -353,14 +354,47 @@ static void draw_taskbar(void)
                    windows[i].title, col_white, true);
     }
 
-    /* Uptime where a clock would be. There is no real-time clock driver, so
-     * showing a wall clock would mean inventing one. */
-    uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
-    int cx = SCR_W - clock_w - 6;
+    /* Real wall-clock time and date from the CMOS chip. The PIT can only say
+     * how long the machine has been up; the date has to come from hardware
+     * that keeps counting while it is switched off. */
+    rtc_time_t now;
+    rtc_read(&now);
 
-    fb_text_aa(cx, bar_y + (TASKBAR_H - fb_font_height(true)) / 2, "up", col_white, true);
-    draw_number(cx + 3 * CHROME_W, bar_y + (TASKBAR_H - 8 * SCALE) / 2,
-                secs, col_white);
+    char clock[8];
+    clock[0] = (char)('0' + now.hour / 10);
+    clock[1] = (char)('0' + now.hour % 10);
+    clock[2] = ':';
+    clock[3] = (char)('0' + now.minute / 10);
+    clock[4] = (char)('0' + now.minute % 10);
+    clock[5] = '\0';
+
+    char date[16];
+    int n = 0;
+    date[n++] = (char)('0' + now.day / 10);
+    date[n++] = (char)('0' + now.day % 10);
+    date[n++] = ' ';
+
+    const char *mon = rtc_month_name(now.month);
+    while (*mon)
+        date[n++] = *mon++;
+
+    date[n++] = ' ';
+    date[n++] = (char)('0' + (now.year / 1000) % 10);
+    date[n++] = (char)('0' + (now.year / 100) % 10);
+    date[n++] = (char)('0' + (now.year / 10) % 10);
+    date[n++] = (char)('0' + now.year % 10);
+    date[n]   = '\0';
+
+    /* Right-aligned, and measured rather than counted: the interface face is
+     * proportional, so the width of "18 Aug 2026" is not a character count. */
+    int cw   = fb_text_width(clock, true);
+    int dw   = fb_text_width(date, true);
+    int wide = cw > dw ? cw : dw;
+    int cx   = SCR_W - wide - 18;
+    int lh   = fb_font_height(true);
+
+    fb_text_aa(cx + (wide - cw), bar_y + TASKBAR_H / 2 - lh + 1, clock, col_white, true);
+    fb_text_aa(cx + (wide - dw), bar_y + TASKBAR_H / 2 + 1, date, col_accent, true);
 }
 
 /* ---- cursor -------------------------------------------------------------
@@ -503,7 +537,7 @@ static bool handle_click(int mx, int my)
         }
 
         int first = sw + 16;
-        int clock_w = 9 * CHROME_W;
+        int clock_w = 13 * CHROME_W;
         int avail = SCR_W - first - clock_w - 16;
         int bw = avail / MAX_WINDOWS;
         if (bw > 18 * CHROME_W) bw = 20 * CELL_W;
@@ -721,6 +755,25 @@ void gui_run(void)
             }
         }
 
+        /* The wheel scrolls whichever terminal the pointer is over, rather
+         * than the focused window. That is what every desktop does, and it
+         * means you do not have to click a window before it will respond. */
+        int wheel = mouse_take_wheel();
+        if (wheel != 0) {
+            for (int i = window_count - 1; i >= 0; i--) {
+                if (!windows[i].visible || windows[i].kind != WIN_TERMINAL)
+                    continue;
+                if (!in_rect(mouse_x(), mouse_y(), windows[i].x, windows[i].y,
+                             windows[i].w, windows[i].h))
+                    continue;
+
+                term_scroll_view(wheel * 3);
+                dirty = true;
+                scene_dirty = true;
+                break;
+            }
+        }
+
         if (mouse_x() != last_mx || mouse_y() != last_my) {
             last_mx = mouse_x();
             last_my = mouse_y();
@@ -744,7 +797,22 @@ void gui_run(void)
         if (scene_dirty) {
             scene_dirty = false;
 
-            fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
+            /* A vertical gradient rather than a flat colour. One fill and one
+             * blend per band; the eye reads the result as depth, and it is the
+             * cheapest thing that stops a desktop looking like a painted slab.
+             * Only redrawn when the scene changes, so the cost is paid on
+             * window movement rather than on every frame. */
+            {
+                int gh = SCR_H - TASKBAR_H;
+                int bands = 64;
+                int bh = (gh + bands - 1) / bands;
+
+                for (int i = 0; i < bands; i++) {
+                    fb_fill_rect(0, i * bh, SCR_W, bh, col_desktop);
+                    fb_blend_rect(0, i * bh, SCR_W, bh, col_black,
+                                  (uint32_t)(i * 100 / bands));
+                }
+            }
             fb_text_aa(14, 10, "MyOS", col_white, true);
             fb_text_aa(14 + fb_text_width("MyOS   ", true), 10,
                        "an operating system, running on the hardware",

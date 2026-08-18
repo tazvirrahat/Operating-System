@@ -38,4 +38,9 @@ uint32_t mouse_packet_count(void);
 /* False if no PS/2 mouse answered during initialisation. */
 bool mouse_present(void);
 
+/* Accumulated wheel movement since the last call, positive for scrolling up.
+ * Reading it consumes it. */
+int  mouse_take_wheel(void);
+bool mouse_has_wheel(void);
+
 #endif /* MOUSE_H */

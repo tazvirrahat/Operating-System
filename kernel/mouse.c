@@ -21,6 +21,11 @@
 #define FLAG_X_OVERFLOW 0x40
 #define FLAG_Y_OVERFLOW 0x80
 
+/* Wheel support changes the packet size, so it has to be known before any
+ * packet is decoded. */
+static bool     has_wheel;
+static int      wheel_delta;
+
 static int      pos_x, pos_y;
 static int      bound_w = 320, bound_h = 200;
 static uint8_t  buttons;
@@ -28,9 +33,11 @@ static uint8_t  pending_clicks;
 static uint32_t packets;
 static bool     present;
 
-/* Three-byte packets arrive one byte per interrupt. */
-static uint8_t  packet[3];
+/* Packets arrive one byte per interrupt: three bytes normally, four once the
+ * wheel is enabled. */
+static uint8_t  packet[4];
 static int      packet_index;
+static int      packet_size = 3;
 
 /* The controller is slow relative to the CPU; both directions need waiting on.
  * Bounded rather than infinite so a missing or wedged controller cannot hang
@@ -86,7 +93,7 @@ static void mouse_isr(registers_t *regs)
 
     packet[packet_index++] = value;
 
-    if (packet_index < 3)
+    if (packet_index < packet_size)
         return;
 
     packet_index = 0;
@@ -121,6 +128,17 @@ static void mouse_isr(registers_t *regs)
     uint8_t now = flags & 0x07;
     pending_clicks |= (uint8_t)(now & ~buttons);
     buttons = now;
+
+    /* The fourth byte is a signed 4-bit wheel movement in its low nibble:
+     * negative for scrolling down, positive for up. The upper nibble carries
+     * the extra buttons on a five-button mouse, which are ignored here. */
+    if (has_wheel) {
+        int8_t z = (int8_t)(packet[3] & 0x0F);
+        if (z & 0x08)
+            z |= (int8_t)0xF0;      /* sign-extend from four bits */
+
+        wheel_delta += z;
+    }
 }
 
 void mouse_init(void)
@@ -152,6 +170,30 @@ void mouse_init(void)
     if (!mouse_write(0xF6)) goto absent;
     if (mouse_read() != 0xFA) goto absent;
 
+    /* Ask for the wheel.
+     *
+     * A plain PS/2 mouse sends three-byte packets and has no scroll wheel.
+     * The extended protocol is not requested by a command -- it is unlocked
+     * by setting the sample rate to 200, then 100, then 80 in that exact
+     * order, after which the device reports ID 3 instead of 0 and starts
+     * sending a fourth byte carrying the wheel movement. It is a knock rather
+     * than a question, and a mouse that does not recognise it simply stays in
+     * the three-byte protocol, which is why this is safe to attempt blindly. */
+    static const uint8_t knock[3] = { 200, 100, 80 };
+
+    for (int i = 0; i < 3; i++) {
+        if (!mouse_write(0xF3)) goto absent;    /* set sample rate */
+        if (mouse_read() != 0xFA) goto absent;
+        if (!mouse_write(knock[i])) goto absent;
+        if (mouse_read() != 0xFA) goto absent;
+    }
+
+    if (mouse_write(0xF2) && mouse_read() == 0xFA) {
+        uint8_t id = mouse_read();
+        has_wheel   = (id == 3);
+        packet_size = has_wheel ? 4 : 3;
+    }
+
     if (!mouse_write(0xF4)) goto absent;
     if (mouse_read() != 0xFA) goto absent;
 
@@ -165,7 +207,9 @@ void mouse_init(void)
     pic_unmask(2);
     pic_unmask(IRQ_MOUSE);
 
-    kprintf("mouse            : ps/2, irq 12, reporting enabled\n");
+    kprintf("mouse            : ps/2, irq 12, %s\n",
+            has_wheel ? "wheel enabled, 4-byte packets"
+                      : "no wheel, 3-byte packets");
     return;
 
 absent:
@@ -198,3 +242,13 @@ void mouse_set_bounds(int w, int h)
 
 uint32_t mouse_packet_count(void) { return packets; }
 bool     mouse_present(void)      { return present; }
+
+
+int mouse_take_wheel(void)
+{
+    int d = wheel_delta;
+    wheel_delta = 0;
+    return d;
+}
+
+bool mouse_has_wheel(void) { return has_wheel; }
