@@ -66,6 +66,24 @@ static char term_cells[MAX_ROWS][MAX_COLS];
 static int  term_cols, term_rows;
 static int  term_cx, term_cy;
 
+/* Scrollback.
+ *
+ * Lines pushed off the top were previously discarded, which made anything
+ * longer than the window -- the self-test, a fault dump, a long help listing
+ * -- unreadable the moment it had scrolled. They are kept in a ring now and
+ * PgUp pages back through them.
+ *
+ * The view offset is a display concern only: it never changes what has been
+ * written, and any new output snaps back to the bottom so live output is
+ * never silently hidden behind a scrolled view.
+ */
+#define TERM_HISTORY 400
+
+static char term_history[TERM_HISTORY][MAX_COLS];
+static int  term_hist_count;
+static int  term_hist_next;
+static int  term_view_offset;
+
 static void term_clear(void)
 {
     memset(term_cells, ' ', sizeof(term_cells));
@@ -74,11 +92,45 @@ static void term_clear(void)
 
 static void term_scroll(void)
 {
+    /* Keep the line about to be lost. */
+    memcpy(term_history[term_hist_next], term_cells[0], (uint32_t)term_cols);
+    term_hist_next = (term_hist_next + 1) % TERM_HISTORY;
+    if (term_hist_count < TERM_HISTORY)
+        term_hist_count++;
+
     for (int y = 1; y < term_rows; y++)
         memcpy(term_cells[y - 1], term_cells[y], (uint32_t)term_cols);
 
     memset(term_cells[term_rows - 1], ' ', (uint32_t)term_cols);
     term_cy = term_rows - 1;
+}
+
+/* Fetch a displayed row, taking the scroll offset into account. Rows above
+ * the live grid come from the ring. */
+static const char *term_row(int row)
+{
+    int from_history = term_view_offset - row;
+
+    if (from_history > 0) {
+        if (from_history > term_hist_count)
+            return 0;
+
+        int slot = (term_hist_next - from_history + TERM_HISTORY * 2)
+                 % TERM_HISTORY;
+        return term_history[slot];
+    }
+
+    return term_cells[row - term_view_offset];
+}
+
+static void term_scroll_view(int lines)
+{
+    term_view_offset += lines;
+
+    if (term_view_offset > term_hist_count)
+        term_view_offset = term_hist_count;
+    if (term_view_offset < 0)
+        term_view_offset = 0;
 }
 
 static void term_putc(char c)
@@ -171,15 +223,25 @@ static void draw_terminal(const window_t *win, bool active)
     fb_fill_round_rect(win->x + 6, win->y + TITLE_H + 2,
                        win->w - 12, win->h - TITLE_H - 8, 5, col_term_bg);
 
-    for (int row = 0; row < term_rows; row++)
+    for (int row = 0; row < term_rows; row++) {
+        const char *line = term_row(row);
+        if (!line)
+            continue;
+
         for (int col = 0; col < term_cols; col++) {
-            char c = term_cells[row][col];
+            char c = line[col];
             if (c != ' ')
                 fb_char_aa(tx + col * CELL_W, ty + row * CELL_H,
                            c, col_term_fg, false);
         }
+    }
 
-    if (active)
+    /* A marker while scrolled back, so it is obvious the view is not live. */
+    if (term_view_offset > 0)
+        fb_blend_rect(win->x + win->w - 10, win->y + TITLE_H + 4,
+                      4, win->h - TITLE_H - 12, col_accent, 120);
+
+    if (active && term_view_offset == 0)
         fb_fill_rect(tx + term_cx * CELL_W,
                      ty + term_cy * CELL_H + CELL_H - 2,
                      CELL_W, 2, col_term_fg);
@@ -590,12 +652,17 @@ void gui_run(void)
                 kprintf("> ");
             } else if (c == '\b') {
                 if (len > 0) { len--; kputc('\b'); }
+            } else if (c == KEY_PGUP) {
+                term_scroll_view(term_rows / 2);
+            } else if (c == KEY_PGDN) {
+                term_scroll_view(-(term_rows / 2));
             } else if (c >= 32 && c < 127 && len < (int)sizeof(line) - 1) {
                 line[len++] = c;
                 kputc(c);
             }
 
             dirty = true;
+            scene_dirty = true;   /* typed text is part of the scene */
         }
 
         if (mouse_take_click(MOUSE_LEFT)) {
