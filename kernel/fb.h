@@ -49,6 +49,21 @@ void fb_mark_dirty(int x, int y, int w, int h);
 /* Copy the dirty region to the display and clear the record. */
 void fb_present(void);
 
+/* Read a rectangle out of the backbuffer, and write one back.
+ *
+ * These exist for the mouse cursor. Drawing a cursor by repainting the whole
+ * scene underneath it costs a full-screen redraw for every pixel of mouse
+ * movement. Saving what is beneath it instead, restoring that when it moves,
+ * and blitting it at the new position touches two small rectangles rather
+ * than the entire display -- which at 1920x1080 is the difference between
+ * copying a few kilobytes and copying 8.3 megabytes.
+ *
+ * The caller supplies the storage and is responsible for its size: w * h
+ * pixels of 32 bits each.
+ */
+void fb_read_rect(int x, int y, int w, int h, uint32_t *dst);
+void fb_write_rect(int x, int y, int w, int h, const uint32_t *src);
+
 /* Force the whole screen to be copied on the next present. */
 void fb_mark_all_dirty(void);
 

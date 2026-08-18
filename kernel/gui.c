@@ -274,12 +274,29 @@ static void draw_taskbar(void)
                 secs, col_white);
 }
 
-static void draw_cursor(void)
-{
-    int mx = mouse_x();
-    int my = mouse_y();
-    int s  = SCALE;
+/* ---- cursor -------------------------------------------------------------
+ *
+ * The cursor is composited separately from the rest of the interface, and
+ * this is the single most important thing in the render loop.
+ *
+ * Drawing it as part of the scene means the scene has to be repainted every
+ * time the pointer moves a pixel: at 1920x1080 that is a full 8.3 MB redraw
+ * and copy to answer a mouse interrupt, which is what made the pointer feel
+ * as though it were dragging. Instead the pixels underneath are saved before
+ * the cursor is drawn and put back before it moves, so a mouse movement
+ * touches two small rectangles and nothing else.
+ */
 
+#define CURSOR_W 16
+#define CURSOR_H 24
+
+static uint32_t cursor_backing[CURSOR_W * 4 * CURSOR_H * 4];
+static int      cursor_saved_x, cursor_saved_y;
+static int      cursor_saved_w, cursor_saved_h;
+static bool     cursor_visible;
+
+static void cursor_shape(int mx, int my, int s)
+{
     for (int i = 0; i < 14; i++) {
         fb_fill_rect(mx, my + i * s, s, s, col_black);
         if (i > 0 && i < 11) fb_fill_rect(mx + s, my + i * s, s, s, col_white);
@@ -289,6 +306,36 @@ static void draw_cursor(void)
     for (int i = 0; i < 7; i++)
         fb_fill_rect(mx + (3 + i) * s, my + (4 + i) * s, s, s,
                      i < 4 ? col_white : col_black);
+}
+
+/* Put back whatever the cursor was covering. */
+static void cursor_erase(void)
+{
+    if (!cursor_visible)
+        return;
+
+    fb_write_rect(cursor_saved_x, cursor_saved_y,
+                  cursor_saved_w, cursor_saved_h, cursor_backing);
+
+    cursor_visible = false;
+}
+
+/* Save what is about to be covered, then draw. */
+static void cursor_draw(void)
+{
+    int s = SCALE;
+    int w = CURSOR_W * s;
+    int h = CURSOR_H * s;
+
+    cursor_saved_x = mouse_x();
+    cursor_saved_y = mouse_y();
+    cursor_saved_w = w;
+    cursor_saved_h = h;
+
+    fb_read_rect(cursor_saved_x, cursor_saved_y, w, h, cursor_backing);
+    cursor_shape(cursor_saved_x, cursor_saved_y, s);
+
+    cursor_visible = true;
 }
 
 /* ---- input --------------------------------------------------------------- */
@@ -497,6 +544,11 @@ void gui_run(void)
     kprintf("Start menu opens windows. Drag by the title bar.\n");
     kprintf("try: help, tasks, meminfo\n\n> ");
 
+    /* Two different notions of "needs work". scene_dirty means the windows or
+     * their contents changed and the interface has to be repainted. dirty
+     * means only that something happened at all -- most often the pointer
+     * moving, which needs the cursor recomposited and nothing else. */
+    bool     scene_dirty = true;
     bool     dirty = true;
     int      last_mx = mouse_x(), last_my = mouse_y();
     uint32_t last_frame = pit_ticks();
@@ -534,6 +586,7 @@ void gui_run(void)
                 return;
             }
             dirty = true;
+            scene_dirty = true;
         }
 
         if (dragging >= 0) {
@@ -542,6 +595,7 @@ void gui_run(void)
                 windows[dragging].y = mouse_y() - drag_dy;
                 clamp_window(&windows[dragging]);
                 dirty = true;
+                scene_dirty = true;
             } else {
                 dragging = -1;
             }
@@ -561,31 +615,46 @@ void gui_run(void)
             continue;
         }
 
-        dirty = false;
         last_frame = pit_ticks();
 
-        fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
-        fb_text(10, 8, "MyOS", col_white, SCALE);
-        fb_text(10 + 6 * CHROME_W, 8, "an operating system, running on the hardware", col_accent, SCALE);
+        /* The cursor sits on top of the scene, so it has to come off before
+         * anything underneath is touched, and go back on afterwards. */
+        cursor_erase();
 
-        for (int i = 0; i < window_count; i++) {
-            if (!windows[i].visible)
-                continue;
+        if (scene_dirty) {
+            scene_dirty = false;
 
-            draw_window_frame(&windows[i], i == focused);
+            fb_fill_rect(0, 0, SCR_W, SCR_H - TASKBAR_H, col_desktop);
+            fb_text(10, 8, "MyOS", col_white, SCALE);
+            fb_text(10 + 6 * CHROME_W, 8,
+                    "an operating system, running on the hardware",
+                    col_accent, SCALE);
 
-            if (windows[i].kind == WIN_TERMINAL)
-                draw_terminal(&windows[i], i == focused);
-            else
-                draw_stats(&windows[i]);
+            for (int i = 0; i < window_count; i++) {
+                if (!windows[i].visible)
+                    continue;
+
+                draw_window_frame(&windows[i], i == focused);
+
+                if (windows[i].kind == WIN_TERMINAL)
+                    draw_terminal(&windows[i], i == focused);
+                else
+                    draw_stats(&windows[i]);
+            }
+
+            draw_taskbar();
+
+            if (start_menu_open)
+                draw_start_menu();
         }
 
-        draw_taskbar();
+        /* Two presents rather than one. The dirty record is a single bounding
+         * box, so flushing between the erase and the redraw keeps a cursor
+         * that has moved across the screen from expanding that box to cover
+         * everything in between. */
+        fb_present();
 
-        if (start_menu_open)
-            draw_start_menu();
-
-        draw_cursor();
+        cursor_draw();
         fb_present();
 
         task_yield();

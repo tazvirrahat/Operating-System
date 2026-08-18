@@ -267,3 +267,47 @@ void fb_text(int x, int y, const char *s, uint32_t fg, int scale)
         x += 8 * scale;
     }
 }
+
+void fb_read_rect(int x, int y, int w, int h, uint32_t *dst)
+{
+    if (!ready || !dst)
+        return;
+
+    for (int row = 0; row < h; row++) {
+        int yy = y + row;
+
+        for (int col = 0; col < w; col++) {
+            int xx = x + col;
+
+            /* Off-screen pixels read as black rather than being skipped, so
+             * the saved block stays rectangular and can be written back with
+             * the same geometry. */
+            dst[row * w + col] =
+                (xx >= 0 && yy >= 0 && xx < (int)width && yy < (int)height)
+                ? back[yy * (int)width + xx]
+                : 0;
+        }
+    }
+}
+
+void fb_write_rect(int x, int y, int w, int h, const uint32_t *src)
+{
+    if (!ready || !src)
+        return;
+
+    for (int row = 0; row < h; row++) {
+        int yy = y + row;
+        if (yy < 0 || yy >= (int)height)
+            continue;
+
+        uint32_t *line = &back[yy * (int)width];
+
+        for (int col = 0; col < w; col++) {
+            int xx = x + col;
+            if (xx >= 0 && xx < (int)width)
+                line[xx] = src[row * w + col];
+        }
+    }
+
+    fb_mark_dirty(x, y, w, h);
+}
