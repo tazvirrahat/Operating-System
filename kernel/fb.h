@@ -86,4 +86,14 @@ int  fb_mono_advance(void);
 /* Blend a colour over a region. Used for shadows and translucent panels. */
 void fb_blend_rect(int x, int y, int w, int h, uint32_t colour, uint32_t alpha);
 
+
+/* Rounded rectangle with anti-aliased corners, and a soft drop shadow.
+ * Both are alpha operations: omitting corner pixels outright gives a hard
+ * stair-stepped arc that looks worse than a square corner. */
+void fb_fill_round_rect(int x, int y, int w, int h, int radius, uint32_t colour);
+void fb_shadow(int x, int y, int w, int h, int radius, int spread);
+
+void fb_blend_round_rect(int x, int y, int w, int h, int radius,
+                         uint32_t colour, uint32_t alpha);
+
 #endif

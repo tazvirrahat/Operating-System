@@ -58,6 +58,7 @@ static bool start_menu_open;
 static uint32_t col_desktop, col_face, col_edge, col_shade;
 static uint32_t col_title_on, col_title_off, col_term_bg, col_term_fg;
 static uint32_t col_bar, col_btn, col_btn_on, col_white, col_black, col_accent;
+static uint32_t col_close;
 
 /* ---- terminal ------------------------------------------------------------ */
 
@@ -114,39 +115,52 @@ static void clamp_window(window_t *win)
     if (win->y < 0) win->y = 0;
 }
 
+#define WIN_RADIUS 8
+
 static void draw_window_frame(const window_t *win, bool active)
 {
-    fb_fill_rect(win->x + 4, win->y + 4, win->w, win->h, col_shade);
-    fb_fill_rect(win->x, win->y, win->w, win->h, col_face);
-    fb_rect(win->x, win->y, win->w, win->h, col_black);
+    /* The focused window gets a deeper shadow. Depth is how a desktop shows
+     * which window is in front without needing a colour change. */
+    fb_shadow(win->x, win->y, win->w, win->h, WIN_RADIUS, active ? 9 : 5);
 
-    fb_fill_rect(win->x + BORDER, win->y + BORDER,
-                 win->w - 2 * BORDER, TITLE_H,
+    fb_fill_round_rect(win->x, win->y, win->w, win->h, WIN_RADIUS, col_face);
+
+    /* Title bar. Its bottom corners are square so it meets the window body
+     * flush, which means drawing it as a rounded rect and then squaring off
+     * the lower half. */
+    fb_fill_round_rect(win->x, win->y, win->w, TITLE_H, WIN_RADIUS,
+                       active ? col_title_on : col_title_off);
+    fb_fill_rect(win->x, win->y + TITLE_H - WIN_RADIUS, win->w, WIN_RADIUS,
                  active ? col_title_on : col_title_off);
 
-    fb_text_aa(win->x + 10, win->y + (TITLE_H - fb_font_height(true)) / 2 + BORDER,
+    /* A single lighter line along the top edge. Real interfaces suggest a
+     * light source rather than drawing a border, and one row is enough. */
+    fb_blend_rect(win->x + WIN_RADIUS, win->y, win->w - 2 * WIN_RADIUS, 1,
+                  col_white, active ? 70 : 40);
+
+    fb_text_aa(win->x + 14, win->y + (TITLE_H - fb_font_height(true)) / 2,
                win->title, col_white, true);
 
-    /* Close box on the right of the title bar. */
-    int bs = TITLE_H - 10;
-    int bx = win->x + win->w - bs - 8;
-    int by = win->y + 5;
+    /* Close button: a circle that only shows its colour on the focused
+     * window, which is how it reads as inactive rather than disabled. */
+    int bs = TITLE_H - 14;
+    int bx = win->x + win->w - bs - 12;
+    int by = win->y + 7;
 
-    fb_fill_rect(bx, by, bs, bs, col_face);
-    fb_rect(bx, by, bs, bs, col_black);
+    fb_fill_round_rect(bx, by, bs, bs, bs / 2,
+                       active ? col_close : col_title_off);
 
-    /* An X, drawn as two diagonals. */
     for (int i = 4; i < bs - 4; i++) {
-        fb_fill_rect(bx + i, by + i, 2, 2, col_black);
-        fb_fill_rect(bx + bs - 1 - i, by + i, 2, 2, col_black);
+        fb_blend_rect(bx + i, by + i, 2, 2, col_white, 220);
+        fb_blend_rect(bx + bs - 1 - i, by + i, 2, 2, col_white, 220);
     }
 }
 
 static void close_box_rect(const window_t *win, int *bx, int *by, int *bs)
 {
-    *bs = TITLE_H - 10;
-    *bx = win->x + win->w - *bs - 8;
-    *by = win->y + 5;
+    *bs = TITLE_H - 14;
+    *bx = win->x + win->w - *bs - 12;
+    *by = win->y + 7;
 }
 
 static void draw_terminal(const window_t *win, bool active)
@@ -154,9 +168,8 @@ static void draw_terminal(const window_t *win, bool active)
     int tx = win->x + BORDER + 4;
     int ty = win->y + TITLE_H + BORDER + 4;
 
-    fb_fill_rect(win->x + BORDER, win->y + TITLE_H + BORDER,
-                 win->w - 2 * BORDER, win->h - TITLE_H - 2 * BORDER,
-                 col_term_bg);
+    fb_fill_round_rect(win->x + 6, win->y + TITLE_H + 2,
+                       win->w - 12, win->h - TITLE_H - 8, 5, col_term_bg);
 
     for (int row = 0; row < term_rows; row++)
         for (int col = 0; col < term_cols; col++) {
@@ -218,15 +231,14 @@ static void draw_start_menu(void)
     int mx = 4;
     int my = SCR_H - TASKBAR_H - mh;
 
-    fb_fill_rect(mx + 3, my + 3, mw, mh, col_shade);
-    fb_fill_rect(mx, my, mw, mh, col_face);
-    fb_rect(mx, my, mw, mh, col_black);
+    fb_shadow(mx, my, mw, mh, 8, 8);
+    fb_fill_round_rect(mx, my, mw, mh, 8, col_face);
 
     static const char *items[3] = { "Terminal", "System", "Exit to console" };
 
     for (int i = 0; i < 3; i++) {
         int iy = my + 6 + i * (CHROME_H + 10);
-        fb_fill_rect(mx + 4, iy, mw - 8, CHROME_H + 6, col_face);
+        fb_fill_round_rect(mx + 5, iy, mw - 10, CHROME_H + 6, 4, col_face);
         fb_text_aa(mx + 12, iy + 3, items[i], col_black, true);
     }
 }
@@ -236,13 +248,14 @@ static void draw_taskbar(void)
     int bar_y = SCR_H - TASKBAR_H;
 
     fb_fill_rect(0, bar_y, SCR_W, TASKBAR_H, col_bar);
-    fb_fill_rect(0, bar_y, SCR_W, 2, col_accent);
+
+    /* A hairline of light along the top rather than a coloured band. */
+    fb_blend_rect(0, bar_y, SCR_W, 1, col_white, 45);
 
     /* Start button. */
     int sw = 7 * CHROME_W;
-    fb_fill_rect(6, bar_y + 5, sw, TASKBAR_H - 10,
-                 start_menu_open ? col_btn_on : col_btn);
-    fb_rect(6, bar_y + 5, sw, TASKBAR_H - 10, col_black);
+    fb_fill_round_rect(8, bar_y + 6, sw, TASKBAR_H - 12, 6,
+                       start_menu_open ? col_btn_on : col_btn);
     fb_text_aa(16, bar_y + (TASKBAR_H - fb_font_height(true)) / 2, "Start", col_white, true);
 
     /* One button per window. Width is divided from the space that is actually
@@ -257,9 +270,8 @@ static void draw_taskbar(void)
     for (int i = 0; i < window_count && bw > 5 * CHROME_W; i++) {
         int bx = first + i * (bw + 6);
 
-        fb_fill_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10,
-                     windows[i].visible ? col_btn_on : col_btn);
-        fb_rect(bx, bar_y + 5, bw - 6, TASKBAR_H - 10, col_black);
+        fb_fill_round_rect(bx, bar_y + 6, bw - 8, TASKBAR_H - 12, 6,
+                           windows[i].visible ? col_btn_on : col_btn);
         fb_text_aa(bx + 10, bar_y + (TASKBAR_H - fb_font_height(true)) / 2,
                    windows[i].title, col_white, true);
     }
@@ -486,20 +498,24 @@ void gui_run(void)
     TASKBAR_H = CHROME_H + 20;
     TITLE_H   = CHROME_H + 12;
 
-    col_desktop   = fb_rgb(30, 58, 92);
-    col_face      = fb_rgb(206, 206, 210);
-    col_edge      = fb_rgb(248, 248, 250);
-    col_shade     = fb_rgb(16, 30, 48);
-    col_title_on  = fb_rgb(26, 86, 166);
-    col_title_off = fb_rgb(122, 122, 132);
-    col_term_bg   = fb_rgb(12, 14, 22);
-    col_term_fg   = fb_rgb(126, 232, 146);
-    col_bar       = fb_rgb(36, 42, 56);
-    col_btn       = fb_rgb(58, 66, 84);
-    col_btn_on    = fb_rgb(26, 86, 166);
-    col_accent    = fb_rgb(90, 150, 220);
+    /* Muted and low-contrast. Saturated primaries are most of what makes an
+     * interface look like a toy; desktops sit in a narrow band of desaturated
+     * greys and blues and put contrast only where it carries meaning. */
+    col_desktop   = fb_rgb(26,  34,  48);
+    col_face      = fb_rgb(243, 244, 246);
+    col_edge      = fb_rgb(255, 255, 255);
+    col_shade     = fb_rgb(10,  14,  22);
+    col_title_on  = fb_rgb(46,  62,  92);
+    col_title_off = fb_rgb(120, 128, 142);
+    col_term_bg   = fb_rgb(22,  26,  34);
+    col_term_fg   = fb_rgb(178, 220, 190);
+    col_bar       = fb_rgb(30,  36,  48);
+    col_btn       = fb_rgb(52,  60,  76);
+    col_btn_on    = fb_rgb(70,  110, 170);
+    col_accent    = fb_rgb(138, 170, 214);
+    col_close     = fb_rgb(198, 88,  84);
     col_white     = fb_rgb(255, 255, 255);
-    col_black     = fb_rgb(0, 0, 0);
+    col_black     = fb_rgb(0,   0,   0);
 
     /* The stats window is sized first, from the longest label it has to show,
      * and the terminal then takes the width that is left. Sizing the terminal

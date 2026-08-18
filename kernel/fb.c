@@ -443,3 +443,123 @@ int fb_text_width(const char *s, bool ui)
 
 int fb_font_height(bool ui) { return ui ? font_ui_h : font_mono_h; }
 int fb_mono_advance(void)   { return font_mono_adv['M' - 32]; }
+
+/* ---- rounded rectangles and shadows ---------------------------------------
+ *
+ * Both are alpha work rather than shape work. A rounded corner is a filled
+ * rectangle whose corner pixels are blended by how much of each lies inside
+ * the curve, and a drop shadow is several translucent rectangles stacked with
+ * falling opacity. Doing the corners by simply omitting pixels gives a hard
+ * stair-stepped arc that looks worse than a square corner.
+ */
+
+/* Coverage of a pixel by a quarter circle, approximated by sampling the pixel
+ * at four points. Exact area would need square roots; four samples give five
+ * levels of coverage, which at these radii is indistinguishable. */
+static uint32_t corner_coverage(int px, int py, int r)
+{
+    int inside = 0;
+
+    for (int sy = 0; sy < 2; sy++) {
+        for (int sx = 0; sx < 2; sx++) {
+            int dx = r - (px * 2 + sx) / 2 - 1;
+            int dy = r - (py * 2 + sy) / 2 - 1;
+
+            if (dx * dx + dy * dy <= r * r)
+                inside++;
+        }
+    }
+
+    return (uint32_t)(inside * 255 / 4);
+}
+
+void fb_fill_round_rect(int x, int y, int w, int h, int r, uint32_t colour)
+{
+    if (!ready || w <= 0 || h <= 0)
+        return;
+
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    if (r < 1) {
+        fb_fill_rect(x, y, w, h, colour);
+        return;
+    }
+
+    /* Middle band full width, then the two end bands inset by the radius. */
+    fb_fill_rect(x, y + r, w, h - 2 * r, colour);
+    fb_fill_rect(x + r, y, w - 2 * r, r, colour);
+    fb_fill_rect(x + r, y + h - r, w - 2 * r, r, colour);
+
+    for (int py = 0; py < r; py++) {
+        for (int px = 0; px < r; px++) {
+            uint32_t a = corner_coverage(px, py, r);
+            if (a == 0)
+                continue;
+
+            fb_blend_rect(x + px,             y + py,             1, 1, colour, a);
+            fb_blend_rect(x + w - 1 - px,     y + py,             1, 1, colour, a);
+            fb_blend_rect(x + px,             y + h - 1 - py,     1, 1, colour, a);
+            fb_blend_rect(x + w - 1 - px,     y + h - 1 - py,     1, 1, colour, a);
+        }
+    }
+}
+
+/* Blend a rounded rectangle rather than filling it solid. Needed for the
+ * shadow, which is built from many faint layers. */
+void fb_blend_round_rect(int x, int y, int w, int h, int r,
+                         uint32_t colour, uint32_t alpha)
+{
+    if (!ready || w <= 0 || h <= 0 || alpha == 0)
+        return;
+
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+
+    if (r < 1) {
+        fb_blend_rect(x, y, w, h, colour, alpha);
+        return;
+    }
+
+    fb_blend_rect(x, y + r, w, h - 2 * r, colour, alpha);
+    fb_blend_rect(x + r, y, w - 2 * r, r, colour, alpha);
+    fb_blend_rect(x + r, y + h - r, w - 2 * r, r, colour, alpha);
+
+    for (int py = 0; py < r; py++) {
+        for (int px = 0; px < r; px++) {
+            uint32_t cov = corner_coverage(px, py, r);
+            if (cov == 0)
+                continue;
+
+            /* Corner coverage scales the layer's own opacity, so a partly
+             * covered corner pixel in a faint layer stays faint. */
+            uint32_t a = (cov * alpha) >> 8;
+            if (a == 0)
+                continue;
+
+            fb_blend_rect(x + px,         y + py,         1, 1, colour, a);
+            fb_blend_rect(x + w - 1 - px, y + py,         1, 1, colour, a);
+            fb_blend_rect(x + px,         y + h - 1 - py, 1, 1, colour, a);
+            fb_blend_rect(x + w - 1 - px, y + h - 1 - py, 1, 1, colour, a);
+        }
+    }
+}
+
+void fb_shadow(int x, int y, int w, int h, int r, int spread)
+{
+    if (!ready || spread <= 0)
+        return;
+
+    uint32_t black = fb_rgb(0, 0, 0);
+
+    /* Faint layers, largest first, each one slightly smaller than the last.
+     * Where they overlap the opacity accumulates, so the result is dark near
+     * the window and fades outwards -- a gradient built from flat fills.
+     *
+     * The offset downward is what makes it read as a shadow rather than a
+     * halo: light is assumed to come from above, as it does in every desktop
+     * interface.
+     */
+    for (int i = spread; i >= 1; i--)
+        fb_blend_round_rect(x - i, y - i + 3, w + i * 2, h + i * 2,
+                            r + i, black, 10);
+}
