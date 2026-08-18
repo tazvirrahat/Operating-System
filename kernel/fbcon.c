@@ -118,10 +118,14 @@ void fbcon_putc(char c)
     if (cy >= rows)
         scroll();
 
-    /* Push on line boundaries rather than per character. Presenting after
-     * every glyph would copy the dirty region hundreds of times per line. */
-    if (c == '\n')
-        fb_present();
+    /* Push after every character, not only at end of line.
+     *
+     * Presenting only on a newline meant a typed character was drawn into the
+     * backbuffer and then sat there invisibly until Enter was pressed, so the
+     * prompt appeared to accept nothing at all while typing. The saving was
+     * illusory anyway: the dirty region for one character is a single cell,
+     * so this copies a few hundred bytes. */
+    fb_present();
 }
 
 void fbcon_flush(void)

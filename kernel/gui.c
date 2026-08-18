@@ -133,6 +133,11 @@ static void term_scroll_view(int lines)
         term_view_offset = 0;
 }
 
+/* Set while the graphical shell is running, so terminal output can be shown
+ * as it is produced. */
+static bool gui_active;
+static void gui_flush_terminal(void);
+
 static void term_putc(char c)
 {
     if (c == '\n')      { term_cx = 0; term_cy++; }
@@ -146,6 +151,16 @@ static void term_putc(char c)
 
     if (term_cx >= term_cols) { term_cx = 0; term_cy++; }
     if (term_cy >= term_rows) term_scroll();
+
+    /* Repaint on line boundaries while a command is running.
+     *
+     * Commands are dispatched from inside the render loop, so nothing is
+     * redrawn until they return. A command that takes half a minute -- the
+     * guided demo, or the self-test -- therefore produced no output at all
+     * until it finished, which is indistinguishable from the system having
+     * hung. Flushing here shows the work as it happens. */
+    if (gui_active && c == '\n')
+        gui_flush_terminal();
 }
 
 /* ---- drawing ------------------------------------------------------------- */
@@ -412,6 +427,22 @@ static void cursor_draw(void)
     cursor_visible = true;
 }
 
+/* Redraw just the terminal window and push it, without touching the rest of
+ * the scene. Used for live output while a command is still running. */
+static void gui_flush_terminal(void)
+{
+    for (int i = 0; i < window_count; i++) {
+        if (windows[i].kind != WIN_TERMINAL || !windows[i].visible)
+            continue;
+
+        cursor_erase();
+        draw_terminal(&windows[i], i == focused);
+        cursor_draw();
+        fb_present();
+        return;
+    }
+}
+
 /* ---- input --------------------------------------------------------------- */
 
 static void raise_window(int index)
@@ -619,6 +650,7 @@ void gui_run(void)
     dragging = -1;
 
     mouse_set_bounds(SCR_W, SCR_H);
+    gui_active = true;
     console_set_sink(term_putc);
 
     kprintf("MyOS graphical mode - %dx%d\n", SCR_W, SCR_H);
@@ -639,6 +671,7 @@ void gui_run(void)
             char c = kbd_poll();
 
             if (c == 27) {
+                gui_active = false;
                 console_set_sink(0);
                 fbcon_clear();
                 return;
@@ -667,6 +700,7 @@ void gui_run(void)
 
         if (mouse_take_click(MOUSE_LEFT)) {
             if (!handle_click(mouse_x(), mouse_y())) {
+                gui_active = false;
                 console_set_sink(0);
                 fbcon_clear();
                 return;
@@ -734,12 +768,14 @@ void gui_run(void)
                 draw_start_menu();
         }
 
-        /* Two presents rather than one. The dirty record is a single bounding
-         * box, so flushing between the erase and the redraw keeps a cursor
-         * that has moved across the screen from expanding that box to cover
-         * everything in between. */
-        fb_present();
-
+        /* One present per frame, covering the old cursor position and the new
+         * one together.
+         *
+         * Presenting between the erase and the redraw seemed tidier -- it
+         * keeps the dirty box small when the pointer jumps a long way -- but
+         * it puts a frame on screen with the cursor missing, and at this
+         * frame rate that reads as a flicker. Doing it in one pass costs a
+         * larger rectangle occasionally and never shows a half-drawn state. */
         cursor_draw();
         fb_present();
 
