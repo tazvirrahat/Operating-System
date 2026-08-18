@@ -57,4 +57,18 @@ bool     svga_has_3d(void);
 uint32_t svga_fifo_min(void);
 
 
+/* ---- used by the 3D layer ---- */
+
+/* Push a raw word into the command ring. The 3D layer builds its own command
+ * headers and needs the ring directly. */
+void     svga_fifo_raw(uint32_t value);
+
+/* 3D hardware version from the extended register block. Zero means no
+ * pipeline, even when the 3D capability bit is set. */
+uint32_t svga_fifo_3d_hwversion(void);
+uint32_t svga_fifo_caps(void);
+
+uint32_t svga_screen_width(void);
+uint32_t svga_screen_height(void);
+
 #endif /* SVGA_H */

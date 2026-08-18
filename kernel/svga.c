@@ -51,10 +51,24 @@
 /* The first four words of FIFO memory are a ring buffer header rather than
  * commands: where the ring starts and ends, where the next command goes, and
  * how far the adapter has consumed. */
-#define SVGA_FIFO_MIN      0
-#define SVGA_FIFO_MAX      1
-#define SVGA_FIFO_NEXT_CMD 2
-#define SVGA_FIFO_STOP     3
+#define SVGA_FIFO_MIN                  0
+#define SVGA_FIFO_MAX                  1
+#define SVGA_FIFO_NEXT_CMD             2
+#define SVGA_FIFO_STOP                 3
+
+/* The extended layout adds these. Reading them is only valid when the adapter
+ * advertises SVGA_CAP_EXTENDED_FIFO; on a legacy device these indices are
+ * command data, not registers. */
+#define SVGA_FIFO_CAPABILITIES         4
+#define SVGA_FIFO_FLAGS                5
+#define SVGA_FIFO_FENCE                6
+#define SVGA_FIFO_3D_HWVERSION         7
+#define SVGA_FIFO_3D_CAPS              32
+#define SVGA_FIFO_3D_HWVERSION_REVISED 17
+#define SVGA_FIFO_GUEST_3D_HWVERSION   288
+#define SVGA_FIFO_NUM_REGS             291
+
+#define SVGA_CAP_EXTENDED_FIFO 0x00008000
 
 #define SVGA_CMD_UPDATE    1
 #define SVGA_CMD_RECT_FILL 2
@@ -131,11 +145,22 @@ bool svga_init(void)
 
     fifo = (uint32_t *)fifo_address;
 
-    /* Set up the command ring. Commands start after the four header words. */
-    fifo[SVGA_FIFO_MIN]      = 16;
+    /* Set up the command ring.
+     *
+     * Where the ring starts depends on which register layout the adapter
+     * supports. The legacy layout has four registers, so commands begin at
+     * byte 16. The extended layout has 291, including the 3D hardware version
+     * and capability block, and commands must begin after all of them --
+     * starting at 16 there would put command data on top of registers the
+     * device is still reading. */
+    uint32_t fifo_min = (capabilities & SVGA_CAP_EXTENDED_FIFO)
+                      ? SVGA_FIFO_NUM_REGS * 4
+                      : 4 * 4;
+
+    fifo[SVGA_FIFO_MIN]      = fifo_min;
     fifo[SVGA_FIFO_MAX]      = fifo_size;
-    fifo[SVGA_FIFO_NEXT_CMD] = 16;
-    fifo[SVGA_FIFO_STOP]     = 16;
+    fifo[SVGA_FIFO_NEXT_CMD] = fifo_min;
+    fifo[SVGA_FIFO_STOP]     = fifo_min;
 
     reg_write(SVGA_REG_CONFIG_DONE, 1);
 
@@ -257,3 +282,56 @@ bool svga_copy_rect(int sx, int sy, int dx, int dy, int w, int h)
 uint32_t svga_raw_caps(void) { return capabilities; }
 bool     svga_has_3d(void)   { return present && (capabilities & SVGA_CAP_3D); }
 uint32_t svga_fifo_min(void) { return present && fifo ? fifo[SVGA_FIFO_MIN] : 0; }
+
+/* ---- helpers used by the 3D layer ---------------------------------------- */
+
+/* Write a raw word into the command ring, with no interpretation.
+ *
+ * The 3D layer builds its own command headers, so it needs the ring rather
+ * than the 2D command helpers. Exposing the ring rather than duplicating the
+ * wrap-and-wait logic keeps one implementation of the tricky part. */
+void svga_fifo_raw(uint32_t value)
+{
+    if (present)
+        fifo_write(value);
+}
+
+/* The 3D hardware version, read from the extended register block.
+ *
+ * Two registers can carry it. The original moved when the register layout was
+ * extended, so a revised copy was added at a fixed index and a FIFO capability
+ * bit says which to trust. Reading the wrong one on a device that reports the
+ * other gives a version of zero and makes a working pipeline look absent.
+ *
+ * Both reads are also bounds-checked against where commands begin: on a device
+ * with a short FIFO those indices are command data, not registers. */
+#define SVGA_FIFO_CAP_3D_HWVERSION_REVISED 0x00000100
+
+uint32_t svga_fifo_3d_hwversion(void)
+{
+    if (!present || !fifo || !(capabilities & SVGA_CAP_EXTENDED_FIFO))
+        return 0;
+
+    uint32_t min       = fifo[SVGA_FIFO_MIN];
+    uint32_t fifo_caps = fifo[SVGA_FIFO_CAPABILITIES];
+
+    if ((fifo_caps & SVGA_FIFO_CAP_3D_HWVERSION_REVISED) &&
+        min > SVGA_FIFO_3D_HWVERSION_REVISED * 4)
+        return fifo[SVGA_FIFO_3D_HWVERSION_REVISED];
+
+    if (min > SVGA_FIFO_3D_HWVERSION * 4)
+        return fifo[SVGA_FIFO_3D_HWVERSION];
+
+    return 0;
+}
+
+uint32_t svga_fifo_caps(void)
+{
+    if (!present || !fifo || !(capabilities & SVGA_CAP_EXTENDED_FIFO))
+        return 0;
+
+    return fifo[SVGA_FIFO_CAPABILITIES];
+}
+
+uint32_t svga_screen_width(void)  { return present ? reg_read(SVGA_REG_WIDTH)  : 0; }
+uint32_t svga_screen_height(void) { return present ? reg_read(SVGA_REG_HEIGHT) : 0; }

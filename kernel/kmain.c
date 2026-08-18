@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "pci.h"
 #include "svga.h"
+#include "svga3d.h"
 #include "heap.h"
 #include "paging.h"
 #include "task.h"
@@ -41,7 +42,7 @@ static void banner(void)
     kprintf("\n");
     kprintf("  MyOS v1.0 - a bare metal x86 kernel\n");
     vga_set_color(VGA_DGREY, VGA_BLACK);
-    kprintf("  i386 protected mode, no operating system underneath\n\n");
+    kprintf("  an operating system for i386, running directly on the hardware\n\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
 }
 
@@ -102,6 +103,7 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
      * and command FIFO live at PCI-assigned addresses that have to be mapped
      * before they can be touched. */
     svga_init();
+    svga3d_init();  /* the 3D pipeline, if the adapter exposes one */
 
     if (fb_init(mb)) {
         fbcon_init();
