@@ -145,6 +145,10 @@ static void term_scroll_view(int lines)
 static bool gui_active;
 static void gui_flush_terminal(void);
 
+/* When the terminal was last painted, so a command that produces no
+ * newlines still shows progress. */
+static uint32_t term_last_flush;
+
 static void term_putc(char c)
 {
     if (c == '\n')      { term_cx = 0; term_cy++; }
@@ -159,14 +163,22 @@ static void term_putc(char c)
     if (term_cx >= term_cols) { term_cx = 0; term_cy++; }
     if (term_cy >= term_rows) term_scroll();
 
-    /* Repaint on line boundaries while a command is running.
+    /* Repaint while a command is running.
      *
      * Commands are dispatched from inside the render loop, so nothing is
      * redrawn until they return. A command that takes half a minute -- the
      * guided demo, or the self-test -- therefore produced no output at all
      * until it finished, which is indistinguishable from the system having
-     * hung. Flushing here shows the work as it happens. */
-    if (gui_active && c == '\n')
+     * hung. Flushing here shows the work as it happens.
+     *
+     * Line boundaries alone were not enough. The multitasking demo prints one
+     * character per task with no newline until every task has finished, so
+     * the very demonstration whose point is watching three tasks interleave
+     * was the one that arrived all at once at the end. The elapsed-time
+     * condition covers that without flushing on every character, which at
+     * this window size would cost more than the output is worth. */
+    if (gui_active &&
+        (c == '\n' || pit_ticks() - term_last_flush >= 10))
         gui_flush_terminal();
 }
 
@@ -968,6 +980,8 @@ static void cursor_draw(void)
  * the scene. Used for live output while a command is still running. */
 static void gui_flush_terminal(void)
 {
+    term_last_flush = pit_ticks();
+
     for (int i = 0; i < window_count; i++) {
         if (windows[i].kind != WIN_TERMINAL || !windows[i].visible)
             continue;

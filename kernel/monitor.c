@@ -43,7 +43,19 @@ static void rule(void)
  * so the right-hand border landed in three different columns. */
 static void row_end(void)
 {
-    while (vga_get_x() < BOX_W - 1)
+    /* The width is measured from the console, not from the VGA text cursor.
+     *
+     * Asking vga_get_x() was right only while output went to the text buffer.
+     * Once the framebuffer console took over, that cursor stopped moving,
+     * this loop never reached its limit, and the monitor padded spaces for
+     * ever -- which is not a misaligned border, it is a hang, and it took
+     * `top` and the last step of `demo` down with it.
+     *
+     * The guard is belt and braces: padding a line out to a width should not
+     * be able to wedge the kernel even if the column count is wrong again. */
+    int guard = BOX_W + 8;
+
+    while (console_column() < BOX_W - 1 && guard-- > 0)
         kputc(' ');
 
     kputc('|');

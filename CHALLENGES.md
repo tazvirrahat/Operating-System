@@ -13,7 +13,7 @@ Each challenge below is described in STAR format:
 - **Action** — what we did to address the issue
 - **Result** — the outcome of our action
 
-Twenty-two technical challenges are recorded, in the order they were encountered. Each is traceable to the commit that resolved it.
+Twenty-four technical challenges are recorded, in the order they were encountered. Each is traceable to the commit that resolved it.
 
 A theme runs through most of them and is worth stating first: **on bare metal, "it compiled" tells you almost nothing about whether the program is correct.** There is no operating system, no loader and no runtime beneath this code, so the layout of the binary, the ordering of hardware operations, and whatever the optimiser decided to do with your source are all part of correctness. Four of them were introduced by a tool doing exactly what it was asked, in a context where nothing existed to catch the consequences, and two more by a register or a protocol meaning something other than what the documentation to hand said it meant.
 
@@ -293,7 +293,35 @@ The initialisation order in `kmain` is a dependency graph written out as a seque
 
 ---
 
-## 23. *(Add any further challenges you encountered)*
+## 23. A line-padding loop that became an infinite loop
+
+**Situation.** Two symptoms were reported that sounded unrelated. In the text console, running `demo` made the screen scroll continuously and never stop. In the graphical desktop, the same command froze the display with no mouse pointer.
+
+**Task.** The live monitor draws a box with a right-hand border, and every row is padded out to the box width before that border is printed. The padding was measured rather than counted by hand, which had been a deliberate fix for an earlier defect where three format strings that were supposed to be the same width were not. It measured by asking the VGA driver for its cursor column.
+
+**Action.** The serial log settled it in one look: it was 92 KB, of which 87 KB was a single line consisting of one monitor row followed by eighty-seven thousand spaces.
+
+Asking `vga_get_x()` was correct when it was written, because output went to the VGA text buffer. It stopped being correct when the framebuffer console was added. From then on the console routed characters to the framebuffer, or to a window, and the text-mode cursor never moved again — so the padding loop compared a fixed number against a limit it could never reach and emitted spaces for ever. Both symptoms were that one loop: in the console the spaces scrolled the screen, and in the desktop the render loop never got control back, so nothing repainted and the pointer was never redrawn.
+
+The column is now tracked by the console itself, which is the layer that knows where characters actually went, and the loop is bounded so that padding a line cannot wedge the kernel even if the count is wrong again.
+
+**Result.** `demo` and `top` both complete in the console and in the desktop, and the serial log for the same session is 10 KB with a longest line of 86 characters.
+
+Two things are worth taking from it. The first is that the original fix was right and still broke: measuring the cursor instead of counting by hand was the correct instinct, but it hard-wired an assumption about which device was receiving output, and that assumption expired silently when a new one was added. The second is that an unbounded loop over a condition another subsystem controls is a hang waiting for a change somewhere else — the guard costs one comparison.
+
+---
+
+## 24. A demonstration that could not be watched
+
+**Situation.** With the hang fixed, the multitasking step of the guided demo still arrived all at once in the graphical terminal: nothing, then thirty characters together.
+
+**Task.** The terminal repainted on newlines, which had been added so that a long-running command showed progress instead of looking hung.
+
+**Action.** The multitasking demonstration prints one character per task and no newline until every task has finished. Its entire point is watching three tasks interleave, and it was the one command whose output the newline rule could not show. The repaint now also triggers when enough time has passed since the last one, which covers output that contains no newlines without repainting on every character — at this window size that would cost more than the output is worth.
+
+**Result.** The characters appear as the tasks produce them. Measured across the demo, consecutive frames now differ; before the change they were pixel-identical.
+
+## 25. *(Add any further challenges you encountered)*
 
 **Situation.**
 

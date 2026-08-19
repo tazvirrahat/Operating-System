@@ -17,6 +17,7 @@ void console_init(void)
 }
 
 static console_sink_t sink;
+static int            column;
 
 void console_set_sink(console_sink_t fn)
 {
@@ -46,6 +47,23 @@ void kputc(char c)
         fbcon_putc(c);
     else
         vga_putc(c);
+
+    /* The column is tracked here rather than in any one backend, because
+     * which backend is active changes and the answer must not. */
+    if (c == '\n' || c == '\r')
+        column = 0;
+    else if (c == '\b') {
+        if (column > 0)
+            column--;
+    } else if (c == '\t')
+        column = (column + 4) & ~3;
+    else if ((unsigned char)c >= 32)
+        column++;
+}
+
+int console_column(void)
+{
+    return column;
 }
 
 void kputs(const char *s)
@@ -65,6 +83,8 @@ void console_home(void)
     serial_putc('\033');
     serial_putc('[');
     serial_putc('H');
+
+    column = 0;
 }
 
 /* Render an unsigned value into buf (which must hold at least 33 bytes) and
