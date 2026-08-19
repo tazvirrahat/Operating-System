@@ -701,7 +701,7 @@ static const command_t commands[] = {
     { "write",    "write <f> <text>", "replace a file's contents",                 cmd_write    },
     { "append",   "append <f> <txt>", "add to a file",                             cmd_append   },
     { "rm",       "rm <file>",        "delete a file",                             cmd_rm       },
-    { "wallpaper","wallpaper [1-5]",  "change the desktop background",             cmd_wallpaper},
+    { "wallpaper","wallpaper [1-6]",  "change the desktop background",             cmd_wallpaper},
     { "date",     "date",             "wall-clock time from the cmos chip",        cmd_date     },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },
     { "echo",     "echo <text>",      "print arguments",                           cmd_echo     },

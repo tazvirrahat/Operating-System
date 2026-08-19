@@ -115,6 +115,12 @@ AABBCCAABBBCCCAABBCC...            switching resumes
 
 Windows drag by their title bar, the taskbar clock is read from the CMOS real-time clock, the terminal scrolls with the mouse wheel, and **Start → Change wallpaper** cycles the desktop gradient.
 
+The default background is a real picture, not a generated one. The kernel has no image decoder — adding a PNG or JPEG implementation to a freestanding binary is a project, not a feature — so `tools/genwallpaper.py` does the decoding at build time and emits what a framebuffer actually wants: a 256-entry palette and one index per pixel. To use a different image:
+
+```
+python3 tools/genwallpaper.py assets/wallpaper.jpg kernel/wallpaper_image.c
+```
+
 **File Explorer** is pinned to the taskbar. It lists the filesystem with size and timestamp, and previews whatever is selected. It holds no copy of anything — every frame walks the filesystem afresh, so a file written with `write` in the terminal appears in the window without the terminal knowing the window exists.
 
 ## How it works
@@ -189,7 +195,8 @@ kernel/
   fbcon.c       text console on the framebuffer
   font_atlas.c  generated glyph coverage atlases
   gui.c         window manager, taskbar, Start menu, terminal, file manager
-  wallpaper.c   the desktop gradients
+  wallpaper.c   the desktop picture and gradients
+  wallpaper_image.c  generated palette and pixels
   fs.c          the in-memory filesystem
   shell.c       interactive command loop
   monitor.c     live kernel display

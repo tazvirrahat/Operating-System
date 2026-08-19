@@ -105,7 +105,7 @@ console (VGA + serial)   output first: nothing after this is debuggable without 
 | Framebuffer | `fb.c` | 32-bit drawing, alpha blending, rounded rectangles, shadows, dirty rectangles |
 | Anti-aliased text | `font_atlas.c`, `fbcon.c` | Greyscale coverage atlases baked at build time from a TrueType face |
 | Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback, file manager with preview |
-| Wallpaper | `wallpaper.c` | Five interpolated gradients with an optional vignette |
+| Wallpaper | `wallpaper.c` | An embedded palettised picture, plus five generated gradients |
 | Filesystem | `fs.c` | Flat namespace, growable heap-backed files, RTC timestamps |
 | Shell | `shell.c` | 25 commands, tokeniser, dispatch table, 16-entry command history |
 | Utilities | `string.c` | `memset`/`memcpy`/`strcmp`/`strtoul`; gcc emits calls to some of these regardless of `-fno-builtin` |

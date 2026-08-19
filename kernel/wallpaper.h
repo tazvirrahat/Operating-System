@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-#define WALLPAPER_COUNT 5
+#define WALLPAPER_COUNT 6
 
 /* Draw the current wallpaper into the region above the taskbar. */
 void wallpaper_draw(int w, int h);
