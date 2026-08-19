@@ -84,11 +84,134 @@ VirtualBox is a perfectly good substitute if VMware gives you trouble; the steps
 
 ## Part 3 — What to show, and what to say
 
-Each section below is one demo: the command, what appears, and the one sentence that explains why it matters. **The sentence is the important part** — the output alone does not make the point.
+The timed script for a three-minute recording comes first. Everything after it is the full catalogue, for a longer cut or for answering questions.
 
-### The three-minute version
+Each section in the catalogue is one demo: the command, what appears, and the one sentence that explains why it matters. **The sentence is the important part** — the output alone does not make the point.
 
-If you only have time for three things, do **1, 3 and 5**. If the room wants to see something rather than read output, open with **10**. They cover scheduling, concurrency and privilege — the core of what an operating system is.
+### The three-minute script
+
+Five beats. Everything below is a command you type and a sentence you say over it; the sentence is the point, because the output on its own does not make an argument.
+
+Do one dry run with a stopwatch before recording. The timings below are targets, not measurements — how long each demo takes depends on the host, and the only number that matters is the one you get.
+
+**Before you start recording:** boot the machine and let it reach the prompt. The boot self-test is 30–50 seconds of watching text scroll, which is a third of your budget. Either start recording once the prompt is up, or record it and cut it down to the last line in editing.
+
+---
+
+**0:00 — Open on the verdict** *(~10 s)*
+
+```
+selftest
+```
+
+Let it run in the background of your intro if you like, or just scroll up to the tally you already have from boot.
+
+> "Thirty checks across every subsystem, passing. They do not read back what the kernel printed — each one either turns a mechanism off to prove it was load-bearing, or reads a value the CPU wrote."
+
+---
+
+**0:10 — Preemption, and proof that it is real** *(~45 s)*
+
+```
+spawn 3
+```
+
+Three tasks print interleaved.
+
+> "Three tasks running at once. None of them yields — there is no cooperation in this code. The timer interrupt takes the CPU away from whichever one is running and hands it to the next."
+
+Now the part that makes it evidence rather than a claim:
+
+```
+preempt off
+spawn 3
+```
+
+> "Same three tasks, with the timer no longer driving the scheduler. They run one after another to completion. The interleaving was the scheduler, not the order I happened to print things in."
+
+```
+preempt on
+```
+
+**This is the strongest thirty seconds in the video.** Anyone can print from three tasks. Turning the mechanism off and showing the behaviour disappear is the difference between a demo and a proof.
+
+---
+
+**0:55 — A race condition, then the fix** *(~35 s)*
+
+```
+race off
+```
+
+The final count is wrong, and it is a different wrong number each time.
+
+> "Two tasks incrementing one counter without a lock. The read, the add and the write are three separate instructions, and preemption can land between them, so updates get lost. Notice the answer changes between runs — that is genuine nondeterminism, not a fixed bug."
+
+```
+race on
+```
+
+> "Same two tasks, same iteration count, now taking a mutex. Exactly the expected total, every time."
+
+---
+
+**1:30 — Privilege separation** *(~30 s)*
+
+```
+user
+```
+
+The task is killed by the CPU; the shell keeps running.
+
+> "A task running in ring 3. It tried a privileged instruction, and the processor refused and raised a fault. The kernel caught it, killed that task, and carried on — that is the containment, and it is enforced by hardware, not by checking."
+
+```
+user --syscall
+```
+
+> "The same task going through `int 0x80` instead. That is the one interrupt gate in the whole table with a descriptor privilege level of 3, and it is the only door from user code into the kernel."
+
+---
+
+**2:00 — The desktop, and two subsystems talking** *(~60 s)*
+
+```
+gui
+```
+
+Let the desktop appear. Drag a window by its title bar. Then, in the terminal window:
+
+```
+write demo.txt the scheduler is driven by the timer interrupt
+```
+
+Click **File Explorer** on the taskbar. The file is there, with its size and the time you wrote it. Click it and the contents appear in the preview.
+
+> "Same kernel — the shell is now running inside a window it is also drawing. There is no graphics library underneath: the kernel asks GRUB for a linear framebuffer, and every pixel, every glyph and the mouse pointer come from code in this repository."
+
+> "The file manager holds no copy of the filesystem. It walks it every frame, which is why the file I just wrote in the terminal is already in the window — nothing had to tell it."
+
+Finish with **Start → Change wallpaper** if you have a spare five seconds. It is small, but it shows the desktop is a live thing rather than a picture.
+
+---
+
+**Closing line**
+
+> "No operating system underneath any of this. It boots from GRUB, sets up its own descriptor tables, drives the hardware directly, manages its own memory, and draws its own desktop."
+
+---
+
+### What to leave out, and why
+
+- **`demo`** — it is the guided tour of everything, and it is far longer than three minutes. Good for a longer cut, wrong for this one.
+- **`gputest`** — the 2D acceleration benchmark is real and worth showing in a longer video, but explaining what a command FIFO is costs more time than the result is worth here.
+- **3D acceleration** — the driver is written and the adapter advertises the capability, but it reports a 3D hardware version of zero, so the pipeline is not available to this guest. Do not claim it works. If asked, the honest answer is a good one: the driver declines rather than pushing commands into a FIFO that will not execute them.
+- **Booting on real hardware** — never attempted. Say so if asked.
+
+### If something goes wrong on camera
+
+Nothing here needs to go right the first time. Every command is repeatable and none of them can leave the kernel in a bad state — that is the point of the fault containment. If a task dies unexpectedly, `tasks` will show you what is still running, and the shell will still be there.
+
 
 ---
 
