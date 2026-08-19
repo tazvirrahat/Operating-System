@@ -1,0 +1,26 @@
+---
+description: How the project's documents are split and what must stay true
+globs: ["*.md", "docs/**/*.md"]
+---
+
+The documents are deliberately separate and the instructor requires it:
+
+- `PROJECT_PLAN.md` — scope, milestones, what was deliberately not built
+- `TECHNICAL_REPORT.md` — architecture, challenges in STAR format, results
+- `CHALLENGES.md` — the same challenges standalone, STAR only
+- `README.md` — what it does and how to run it
+- `docs/DEMO_GUIDE.md` — VMware setup and a timed three-minute script
+
+STAR means Situation (what the challenge was), Task (what we were doing
+previously), Action (what we did), Result (the outcome). Keep that order.
+
+If a code change makes a document wrong, fix it in the same commit. The README
+listed a filesystem and a GUI under "deliberately not built" for some time
+after both were built.
+
+Counts go stale: self-test checks, shell commands, line counts, file counts.
+Verify them rather than copying the old number.
+
+Never claim it has run on real hardware — it has not. Never claim 3D
+acceleration works: the driver is complete, but the adapter reports a 3D
+hardware version of zero and the driver correctly declines.

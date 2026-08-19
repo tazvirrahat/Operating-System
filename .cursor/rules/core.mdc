@@ -1,0 +1,24 @@
+---
+description: Non-negotiables for the MyOS kernel — always in context
+alwaysApply: true
+---
+
+Freestanding i386 kernel. No OS underneath, no libc, no runtime. Anything the
+code calls, something in `kernel/` defines. Compiled with `-Werror`, so a
+warning is a failed build.
+
+Build and verify only through Docker — never install a toolchain on the host:
+
+```
+dev            build      (or: docker run --rm -v "$(pwd):/os" myos-dev make)
+dev test       verify     boots headless, fails on any self-test failure
+```
+
+`make test` passing is the floor, not proof. Anything that draws has to be
+looked at.
+
+`kernel/font_atlas.c` and `kernel/wallpaper_image.c` are generated. Never edit
+them by hand — regenerate with the scripts in `tools/`.
+
+Deeper context is in @AGENTS.md and the files it points at. Read it before
+changing bring-up order, the build, or anything in `kernel/`.

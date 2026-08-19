@@ -1,0 +1,37 @@
+---
+description: Conventions and known traps when editing kernel C or assembly
+globs: ["kernel/**/*.c", "kernel/**/*.h", "kernel/**/*.asm", "kernel/linker.ld", "Makefile"]
+---
+
+Comments carry the reasoning, not a restatement of the code: the alternative
+that was rejected, or the bug that produced the current shape. Match the
+density of the surrounding file. British spelling.
+
+Bring-up order in `kmain.c` is a dependency graph written as a sequence. The
+filesystem allocates, so it follows the heap; it timestamps, so it follows the
+clock; the graphics adapter's registers are at PCI-assigned addresses, so it
+follows paging. A subsystem used before it is ready does not raise an error
+here — it returns zeroes.
+
+Traps this codebase has already fallen into. Each is written up in
+`CHALLENGES.md`; these are the ones that will recur:
+
+- The multiboot header must land in the first 8 KB of the image. An
+  auto-inserted `.note.gnu.build-id` pushed it out once and GRUB refused the
+  kernel. `-Wl,--build-id=none` and a `/DISCARD/` entry keep it there.
+- Assembly objects take a `.asm.o` suffix, or `isr.c` and `isr.asm` both
+  produce `isr.o` and silently overwrite each other.
+- Send the interrupt acknowledgement *before* calling the handler. The timer
+  handler ends in a context switch and never returns.
+- `PAGE_USER` is required on the page directory entry, not only the table
+  entry. Permission is an AND across levels.
+- Never poll hardware in an unbounded loop. An absent serial port reads as
+  permanently busy and hangs the kernel in its first `kprintf`. Probe, then
+  bound the wait.
+- Never ask a device where the cursor is. `vga_get_x()` stopped moving when the
+  framebuffer console arrived and a padding loop ran for ever. Use
+  `console_column()`.
+- The compiler deletes undefined behaviour. A deliberate divide-by-zero has to
+  be inline assembly.
+
+The Makefile globs `kernel/*.c`, so a new source file needs no build change.

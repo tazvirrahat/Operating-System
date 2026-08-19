@@ -1,0 +1,25 @@
+---
+description: Rules for the framebuffer, window manager and anything drawn on screen
+globs: ["kernel/gui.c", "kernel/fb.c", "kernel/fb.h", "kernel/fbcon.c", "kernel/wallpaper.c"]
+---
+
+Anything drawn and then hit-tested computes its rectangle in **one** function
+that both callers use. Two copies of the same expressions is how a button stops
+lining up with what it activates, and it has already happened twice here — once
+in the Start menu, once in the taskbar.
+
+Never redraw what has not changed. A full 1920x1080 frame is 8.3 MB; redrawing
+it on every mouse movement is roughly 1.6 GB/s of memory traffic to move a
+pointer. The scene rebuilds only on `scene_dirty`; the cursor saves and restores
+the pixels underneath it instead of forcing a repaint.
+
+Present once per frame. Presenting between erasing the cursor and redrawing it
+puts a frame on screen with no cursor in it, which reads as a flicker.
+
+Long-running commands dispatch synchronously inside the render loop, so they
+must flush the terminal as they go — on newlines *and* on elapsed time. Output
+that arrives only at the end is indistinguishable from a hang, and some demos
+print no newline until they finish.
+
+Hoist anything per-pixel out of a loop that covers the screen. A divide per
+pixel is two million divides per repaint.
