@@ -27,7 +27,7 @@ There is no operating system underneath it. No standard library, no `printf`, no
 | **Privilege separation** | Ring 3 user tasks that can only reach the kernel through `int 0x80`. |
 | **Fault containment** | A faulting task is killed; the kernel and shell keep running. |
 | **Device drivers** | Interrupt-driven PS/2 mouse with the IntelliMouse wheel extension, CMOS real-time clock, PCI bus enumeration, and a VMware SVGA-II framebuffer driver. |
-| **Graphics and windowing** | 1920x1080 32-bit framebuffer with dirty-rectangle updates, anti-aliased text, draggable windows, a taskbar and Start menu, and a terminal with scrollback. |
+| **Graphics and windowing** | 1920x1080 32-bit framebuffer with dirty-rectangle updates, anti-aliased text, draggable windows, a taskbar and Start menu, a terminal with scrollback, and a file manager. |
 | **Filesystem** | A flat in-memory namespace with create, read, write, append and delete, growable allocations, and per-file timestamps from the RTC. |
 
 ## Running it
@@ -115,6 +115,8 @@ AABBCCAABBBCCCAABBCC...            switching resumes
 
 Windows drag by their title bar, the taskbar clock is read from the CMOS real-time clock, the terminal scrolls with the mouse wheel, and **Start → Change wallpaper** cycles the desktop gradient.
 
+**File Explorer** is pinned to the taskbar. It lists the filesystem with size and timestamp, and previews whatever is selected. It holds no copy of anything — every frame walks the filesystem afresh, so a file written with `write` in the terminal appears in the window without the terminal knowing the window exists.
+
 ## How it works
 
 **Boot.** GRUB finds a multiboot header in the first 8 KB of the kernel image, loads it at 1 MB with the CPU already in 32-bit protected mode, and jumps to `_start`. That stub establishes a stack and calls `kmain`. Using GRUB avoids the entire legacy boot sequence — no boot sector, no real mode, no manual mode switching.
@@ -186,7 +188,7 @@ kernel/
   fb.c          framebuffer drawing, anti-aliased text, dirty rectangles
   fbcon.c       text console on the framebuffer
   font_atlas.c  generated glyph coverage atlases
-  gui.c         window manager, taskbar, Start menu, terminal
+  gui.c         window manager, taskbar, Start menu, terminal, file manager
   wallpaper.c   the desktop gradients
   fs.c          the in-memory filesystem
   shell.c       interactive command loop

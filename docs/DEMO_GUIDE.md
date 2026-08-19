@@ -237,7 +237,13 @@ If asked why it does not lag: only the rectangle that changed is copied to the s
 > ls
 ```
 
+Then click **File Explorer** on the taskbar and click through the files. The one you just wrote is there, with its size and the time you wrote it.
+
 > "A namespace mapping names to contents, with the storage allocated and released as files grow and are deleted. It is in memory rather than on a disk — there is no disk driver in this kernel, and the header says so. What is missing is the block layer underneath; everything that makes it a filesystem is here."
+
+> "The file manager holds no copy of any of this. It walks the filesystem every frame, which is why a file written in the terminal is already in the window — nothing had to tell it."
+
+This is the strongest single moment in the demo, because it shows two subsystems you wrote talking to each other through a third.
 
 Expect to be asked whether files survive a reboot. They do not, and the honest answer is better than a hedge: persistence needs an ATA driver and an on-disk format, which is a block layer rather than a filesystem concept.
 

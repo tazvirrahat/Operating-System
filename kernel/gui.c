@@ -11,6 +11,7 @@
 #include "pit.h"
 #include "rtc.h"
 #include "wallpaper.h"
+#include "fs.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -33,14 +34,14 @@ static int TASKBAR_H;
 static int TITLE_H;
 
 #define BORDER 2
-#define MAX_WINDOWS 2
+#define MAX_WINDOWS 3
 
 /* Upper bounds on the terminal grid; the part actually used is computed from
  * the window size. */
 #define MAX_COLS 160
 #define MAX_ROWS 80
 
-typedef enum { WIN_TERMINAL, WIN_STATS } window_kind_t;
+typedef enum { WIN_TERMINAL, WIN_STATS, WIN_FILES } window_kind_t;
 
 typedef struct {
     int           x, y, w, h;
@@ -63,6 +64,8 @@ static uint32_t col_bar, col_btn, col_btn_on, col_white, col_black, col_accent;
 static uint32_t col_close;
 static uint32_t col_search, col_search_fg;
 static uint32_t col_menu, col_menu_fg;
+static uint32_t col_head, col_list_bg, col_list_sel, col_list_sel_off;
+static uint32_t col_pane, col_paper, col_folder, col_folder_tab;
 
 /* ---- terminal ------------------------------------------------------------ */
 
@@ -266,9 +269,11 @@ static void draw_terminal(const window_t *win, bool active)
                      CELL_W, 2, col_term_fg);
 }
 
-static void draw_number(int x, int y, uint32_t v, uint32_t colour)
+/* Returns the length, so a caller that needs to right-align can measure the
+ * string before drawing it. */
+static int u32_to_str(uint32_t v, char *out)
 {
-    char digits[12], out[12];
+    char digits[12];
     int  p = 0, q = 0;
 
     if (v == 0)
@@ -277,7 +282,7 @@ static void draw_number(int x, int y, uint32_t v, uint32_t colour)
     while (p > 0) out[q++] = digits[--p];
     out[q] = '\0';
 
-    fb_text_aa(x, y, out, colour, true);
+    return q;
 }
 
 static void draw_stats(const window_t *win)
@@ -301,17 +306,20 @@ static void draw_stats(const window_t *win)
 
     for (int i = 0; i < 5; i++) {
         fb_text_aa(tx, ty + i * step, labels[i], col_black, true);
-        draw_number(tx + 10 * CHROME_W, ty + i * step, values[i], col_title_on);
+        char v[12];
+        u32_to_str(values[i], v);
+        fb_text_aa(win->x + win->w - 14 - fb_text_width(v, true),
+                   ty + i * step, v, col_title_on, true);
     }
 }
 
 /* The Start menu's geometry is needed both to draw it and to work out what a
  * click landed on. Two copies of these expressions is how a menu item ends up
  * one row off from the thing it runs, so there is only one. */
-#define START_ITEMS 4
+#define START_ITEMS 5
 
 static const char *start_items[START_ITEMS] = {
-    "Terminal", "System", "Change wallpaper", "Exit to console"
+    "Terminal", "File Explorer", "System", "Change wallpaper", "Exit to console"
 };
 
 static void start_menu_box(int *x, int *y, int *w, int *h, int *row)
@@ -352,9 +360,427 @@ static void draw_start_menu(void)
  *
  * Nothing here is rounded. The rounding used on windows would be wrong on a
  * bar that meets three screen edges -- the corners have nowhere to sit. */
+/* ---- file explorer -------------------------------------------------------
+ *
+ * The filesystem existed before this window did, and the only way to reach it
+ * was to type `ls` and `cat`. This is the part that makes it visible: the same
+ * namespace, listed and selectable, with the contents of whatever is selected
+ * shown beside it.
+ *
+ * It keeps no copy of anything. Every frame walks the filesystem afresh, so a
+ * file written from the terminal appears here without the terminal having to
+ * know this window exists. A cached listing would need invalidating from every
+ * place that can create or delete a file, and would be stale the first time
+ * somebody forgot.
+ */
+
+static int files_sel;       /* a row in the listing, not a slot in the table */
+static int files_scroll;
+
+/* The listing skips empty slots, so row numbers and slot numbers are not the
+ * same thing. Everything below counts in rows and resolves to a file here. */
+static const fs_file_t *file_by_row(int row)
+{
+    int seen = 0;
+
+    if (row < 0)
+        return 0;
+
+    for (int i = 0; i < FS_MAX_FILES; i++) {
+        const fs_file_t *f = fs_at(i);
+        if (!f)
+            continue;
+        if (seen == row)
+            return f;
+        seen++;
+    }
+
+    return 0;
+}
+
+typedef struct {
+    int cx, cy, cw, ch;         /* content box inside the window frame */
+    int strip_h;                /* the path bar across the top */
+    int head_y;                 /* the column headings */
+    int list_x, list_y, list_w;
+    int row_h, rows;
+    int name_x, name_w;         /* columns, measured rather than guessed */
+    int size_right, when_x;
+    int pane_x, pane_y, pane_w, pane_h;
+    int status_y;
+} files_layout_t;
+
+/* Drawing and hit-testing both come here rather than each computing the same
+ * offsets. A file manager whose rows are drawn in one place and clicked in
+ * another is how you select the file above the one you pointed at. */
+static void files_layout(const window_t *win, files_layout_t *L)
+{
+    L->cx = win->x + BORDER + 8;
+    L->cy = win->y + TITLE_H + BORDER + 8;
+    L->cw = win->w - 2 * (BORDER + 8);
+    L->ch = win->h - TITLE_H - 2 * BORDER - 16;
+
+    L->strip_h = CHROME_H + 14;
+    L->head_y  = L->cy + L->strip_h + 8;
+
+    L->row_h  = CHROME_H + 8;
+    L->list_x = L->cx;
+    L->list_y = L->head_y + CHROME_H + 8;
+    L->list_w = (L->cw * 60) / 100;
+
+    /* The size and date columns are given exactly the width of the widest
+     * value they can hold; the name gets the remainder. Fixed pixel widths
+     * were the first version, and the name ran into the size the moment the
+     * font or the window changed. */
+    int size_w = fb_text_width("999999", true) + 10;
+    int when_w = fb_text_width("00:00 00 Aug 0000", true) + 10;
+
+    L->when_x     = L->list_x + L->list_w - when_w;
+    L->size_right = L->when_x - 12;
+    L->name_x     = L->list_x + 34;
+    L->name_w     = L->size_right - size_w - L->name_x;
+
+    if (L->name_w < 40)
+        L->name_w = 40;
+
+    L->pane_x = L->cx + L->list_w + 10;
+    L->pane_y = L->head_y;
+    L->pane_w = L->cw - L->list_w - 10;
+
+    L->status_y = L->cy + L->ch - CHROME_H - 2;
+
+    int body = L->status_y - L->list_y - 8;
+
+    L->rows = body / L->row_h;
+    if (L->rows < 1)
+        L->rows = 1;
+
+    L->pane_h = L->status_y - L->pane_y - 8;
+    if (L->pane_h < L->row_h)
+        L->pane_h = L->row_h;
+}
+
+/* Copies as much of a name as fits, ending in ".." when it did not. A name
+ * that overruns its column is worse than a shortened one: it draws over the
+ * next column and both become unreadable. */
+static void fit_text(const char *src, char *dst, int cap, int max_w)
+{
+    int n = 0;
+
+    dst[0] = '\0';
+
+    while (src[n] && n < cap - 1) {
+        dst[n]     = src[n];
+        dst[n + 1] = '\0';
+
+        if (fb_text_width(dst, true) > max_w) {
+            if (n >= 2) {
+                dst[n - 1] = '.';
+                dst[n]     = '.';
+                dst[n + 1] = '\0';
+            } else {
+                dst[0] = '\0';
+            }
+            return;
+        }
+
+        n++;
+    }
+}
+
+/* A folder: a body with a tab along the top left, which is the shape every
+ * desktop uses and is recognisable at this size without any detail. */
+static void draw_folder(int x, int y, int w, int h, uint32_t body, uint32_t tab)
+{
+    int tab_w = (w * 45) / 100;
+    int tab_h = h / 4;
+
+    if (tab_h < 2) tab_h = 2;
+
+    fb_fill_rect(x, y + tab_h, w, h - tab_h, body);
+    fb_fill_rect(x, y, tab_w, tab_h, tab);
+}
+
+/* A sheet with the top right corner turned down. */
+static void draw_page(int x, int y, int w, int h, uint32_t paper, uint32_t ink)
+{
+    int fold = w / 3;
+
+    fb_fill_rect(x, y, w, h, paper);
+
+    /* An outline. Without it a near-white sheet on a near-white listing is
+     * only visible where the folded corner is, which reads as a smudge. */
+    fb_blend_rect(x, y, w, 1, ink, 130);
+    fb_blend_rect(x, y + h - 1, w, 1, ink, 130);
+    fb_blend_rect(x, y, 1, h, ink, 130);
+    fb_blend_rect(x + w - 1, y, 1, h, ink, 130);
+
+    fb_fill_rect(x + w - fold, y, fold, fold, ink);
+
+    /* Two ruled lines, enough to read as text without being text. */
+    for (int i = 1; i <= 2; i++) {
+        int ly = y + h / 3 + (i - 1) * (h / 4);
+        if (ly < y + h - 2)
+            fb_blend_rect(x + 2, ly, w - 4, 1, ink, 150);
+    }
+}
+
+/* Right-aligned, because a column of sizes that is not right-aligned cannot
+ * be compared at a glance, which is most of what a size column is for. */
+static void draw_number_right(int right, int y, uint32_t v, uint32_t colour)
+{
+    char out[12];
+    int  n = u32_to_str(v, out);
+
+    (void)n;
+    fb_text_aa(right - fb_text_width(out, true), y, out, colour, true);
+}
+
+static void draw_files(const window_t *win, bool active)
+{
+    files_layout_t L;
+    files_layout(win, &L);
+
+    int count = fs_file_count();
+
+    if (files_sel >= count) files_sel = count - 1;
+    if (files_sel < 0)      files_sel = 0;
+
+    /* Keep the selection on screen. Clicking cannot move it out of view, but
+     * deleting a file from the terminal can. */
+    if (files_sel < files_scroll)
+        files_scroll = files_sel;
+    if (files_sel >= files_scroll + L.rows)
+        files_scroll = files_sel - L.rows + 1;
+    if (files_scroll > count - L.rows) files_scroll = count - L.rows;
+    if (files_scroll < 0)              files_scroll = 0;
+
+    /* Path bar. There is one directory and it has no name, so this says where
+     * you are rather than pretending to be a path you can edit. */
+    fb_fill_rect(L.cx, L.cy, L.cw, L.strip_h, col_head);
+    draw_folder(L.cx + 10, L.cy + L.strip_h / 2 - 7, 18, 14,
+                col_folder, col_folder_tab);
+    fb_text_aa(L.cx + 36, L.cy + (L.strip_h - CHROME_H) / 2,
+               "This PC  >  Files", col_black, true);
+
+    /* Column headings. */
+    int size_right = L.size_right;
+    int when_x     = L.when_x;
+
+    fb_text_aa(L.name_x, L.head_y, "Name", col_title_off, true);
+    fb_text_aa(size_right - fb_text_width("Size", true), L.head_y,
+               "Size", col_title_off, true);
+    fb_text_aa(when_x, L.head_y, "Modified", col_title_off, true);
+
+    fb_blend_rect(L.list_x, L.list_y - 5, L.list_w, 1, col_black, 50);
+
+    /* The list. */
+    fb_fill_rect(L.list_x, L.list_y, L.list_w, L.rows * L.row_h, col_list_bg);
+
+    for (int r = 0; r < L.rows; r++) {
+        const fs_file_t *f = file_by_row(files_scroll + r);
+        if (!f)
+            break;
+
+        int y = L.list_y + r * L.row_h;
+        bool sel = (files_scroll + r) == files_sel;
+        uint32_t fg = col_black;
+
+        if (sel) {
+            fb_fill_rect(L.list_x, y, L.list_w, L.row_h,
+                         active ? col_list_sel : col_list_sel_off);
+            fg = active ? col_white : col_black;
+        }
+
+        draw_page(L.list_x + 8, y + (L.row_h - 14) / 2, 12, 14,
+                  sel && active ? col_white : col_paper, col_title_off);
+
+        char shown[FS_NAME_MAX + 2];
+        fit_text(f->name, shown, (int)sizeof(shown), L.name_w);
+
+        fb_text_aa(L.name_x, y + (L.row_h - CHROME_H) / 2, shown, fg, true);
+        draw_number_right(size_right, y + (L.row_h - CHROME_H) / 2, f->size, fg);
+
+        /* "20:24 18 Aug 2026", assembled by hand because there is no
+         * snprintf here and the console formatter writes to the console. */
+        char when[24];
+        int  n = 0;
+
+        when[n++] = (char)('0' + f->hour / 10);
+        when[n++] = (char)('0' + f->hour % 10);
+        when[n++] = ':';
+        when[n++] = (char)('0' + f->minute / 10);
+        when[n++] = (char)('0' + f->minute % 10);
+        when[n++] = ' ';
+        when[n++] = (char)('0' + f->day / 10);
+        when[n++] = (char)('0' + f->day % 10);
+        when[n++] = ' ';
+
+        const char *mon = rtc_month_name(f->month);
+        for (int i = 0; mon[i] && i < 3; i++)
+            when[n++] = mon[i];
+
+        when[n++] = ' ';
+        when[n++] = (char)('0' + (f->year / 1000) % 10);
+        when[n++] = (char)('0' + (f->year / 100) % 10);
+        when[n++] = (char)('0' + (f->year / 10) % 10);
+        when[n++] = (char)('0' + f->year % 10);
+        when[n]   = '\0';
+
+        fb_text_aa(when_x, y + (L.row_h - CHROME_H) / 2, when, fg, true);
+    }
+
+    if (count == 0)
+        fb_text_aa(L.name_x, L.list_y + 6,
+                   "This folder is empty.", col_title_off, true);
+
+    /* Preview. The selected file's contents, in the monospaced face, because
+     * a preview that reflows is a preview of something else. */
+    fb_fill_rect(L.pane_x, L.pane_y, L.pane_w, L.pane_h, col_pane);
+
+    const fs_file_t *sel = file_by_row(files_sel);
+    int adv = fb_mono_advance();
+    int px  = L.pane_x + 8;
+    int py  = L.pane_y + 6;
+
+    if (!sel) {
+        fb_text_aa(px, py, "Nothing selected", col_title_off, true);
+    } else {
+        fb_text_aa(px, py, sel->name, col_title_on, true);
+        py += CHROME_H + 6;
+        fb_blend_rect(L.pane_x + 6, py - 3, L.pane_w - 12, 1, col_black, 40);
+
+        int cols = (L.pane_w - 16) / (adv ? adv : 8);
+        int max_rows = (L.pane_y + L.pane_h - py) / CELL_H;
+        int col = 0, row = 0;
+
+        for (uint32_t i = 0; i < sel->size && row < max_rows; i++) {
+            char c = (char)sel->data[i];
+
+            if (c == '\n') {
+                col = 0;
+                row++;
+                continue;
+            }
+
+            if (c == '\t') {
+                col = (col + 4) & ~3;
+            } else {
+                if (c < 32 || c > 126)
+                    c = '.';
+
+                fb_char_aa(px + col * adv, py + row * CELL_H, c,
+                           col_term_fg, false);
+                col++;
+            }
+
+            if (col >= cols) {
+                col = 0;
+                row++;
+            }
+        }
+
+        if (sel->size == 0)
+            fb_text_aa(px, py, "(empty file)", col_title_off, true);
+    }
+
+    /* Status bar, which is where a file manager says how much is here. */
+    char status[48];
+    int  n = 0;
+
+    n += u32_to_str((uint32_t)count, status + n);
+    status[n++] = ' ';
+    status[n++] = 'i'; status[n++] = 't'; status[n++] = 'e'; status[n++] = 'm';
+    if (count != 1) status[n++] = 's';
+    status[n++] = ','; status[n++] = ' ';
+    n += u32_to_str(fs_bytes_used(), status + n);
+    status[n++] = ' ';
+    status[n++] = 'b'; status[n++] = 'y'; status[n++] = 't'; status[n++] = 'e';
+    status[n++] = 's';
+    status[n]   = '\0';
+
+    fb_text_aa(L.cx + 2, L.status_y, status, col_title_off, true);
+}
+
+/* Returns true if the click was inside the listing and changed the selection.
+ * The caller still raises and focuses the window either way. */
+static bool files_click(const window_t *win, int mx, int my)
+{
+    files_layout_t L;
+    files_layout(win, &L);
+
+    if (!in_rect(mx, my, L.list_x, L.list_y, L.list_w, L.rows * L.row_h))
+        return false;
+
+    int row = files_scroll + (my - L.list_y) / L.row_h;
+
+    if (!file_by_row(row))
+        return false;
+
+    files_sel = row;
+    return true;
+}
+
+/* The taskbar's geometry, in one place. The Start menu already had a bug of
+ * exactly this shape -- drawn from one set of expressions and clicked with
+ * another -- and adding a pinned button to a bar whose layout was written out
+ * twice would have been asking for it again. */
+typedef struct {
+    int bar_y, start_w, search_x, search_w, pin_x, pin_w, btn_x, btn_w, clock_w;
+} taskbar_layout_t;
+
+static void taskbar_layout(taskbar_layout_t *T)
+{
+    T->bar_y    = SCR_H - TASKBAR_H;
+    T->start_w  = TASKBAR_H + 14;
+    T->search_x = T->start_w + 6;
+    T->search_w = 300;
+
+    if (T->search_w > SCR_W / 4)
+        T->search_w = SCR_W / 4;
+
+    T->pin_x = T->search_x + T->search_w + 8;
+    T->pin_w = 200;
+
+    T->btn_x   = T->pin_x + T->pin_w + 2;
+    T->btn_w   = 190;
+    T->clock_w = 130;
+}
+
+/* The window a taskbar button stands for, or -1. File Explorer is pinned and
+ * has its own button, so it is not also given one here. */
+static int taskbar_button_window(const taskbar_layout_t *T, int mx, int my)
+{
+    int bx = T->btn_x;
+
+    for (int i = 0; i < window_count; i++) {
+        if (windows[i].kind == WIN_FILES)
+            continue;
+        if (bx + T->btn_w > SCR_W - T->clock_w)
+            break;
+        if (in_rect(mx, my, bx, T->bar_y, T->btn_w, TASKBAR_H))
+            return i;
+
+        bx += T->btn_w + 2;
+    }
+
+    return -1;
+}
+
+static int window_of_kind(window_kind_t kind)
+{
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].kind == kind)
+            return i;
+    return -1;
+}
+
 static void draw_taskbar(void)
 {
-    int bar_y = SCR_H - TASKBAR_H;
+    taskbar_layout_t T;
+    taskbar_layout(&T);
+
+    int bar_y = T.bar_y;
     int lh    = fb_font_height(true);
     int text_y = bar_y + (TASKBAR_H - lh) / 2;
 
@@ -362,7 +788,7 @@ static void draw_taskbar(void)
     fb_blend_rect(0, bar_y, SCR_W, 1, col_white, 30);
 
     /* Start: a square the full height of the bar, flush to the corner. */
-    int start_w = TASKBAR_H + 14;
+    int start_w = T.start_w;
 
     if (start_menu_open)
         fb_fill_rect(0, bar_y, start_w, TASKBAR_H, col_btn_on);
@@ -379,11 +805,8 @@ static void draw_taskbar(void)
 
     /* Search field. It is decoration: there is nothing to search yet, and it
      * says so rather than accepting input that would go nowhere. */
-    int search_x = start_w + 6;
-    int search_w = 300;
-
-    if (search_w > SCR_W / 4)
-        search_w = SCR_W / 4;
+    int search_x = T.search_x;
+    int search_w = T.search_w;
 
     fb_fill_rect(search_x, bar_y + 5, search_w, TASKBAR_H - 10, col_search);
 
@@ -396,12 +819,32 @@ static void draw_taskbar(void)
 
     fb_text_aa(search_x + 34, text_y, "Type here to search", col_search_fg, true);
 
-    /* One button per window, flat, with an accent underline when open. */
-    int bx    = search_x + search_w + 10;
-    int btn_w = 190;
-    int clock_w = 130;
+    /* File Explorer, pinned. It sits next to the search field where Windows
+     * puts it, and it is this window's only taskbar button rather than an
+     * extra one beside a labelled one. */
+    int fi = window_of_kind(WIN_FILES);
+    bool files_open = fi >= 0 && windows[fi].visible;
+
+    if (files_open)
+        fb_blend_rect(T.pin_x, bar_y + 1, T.pin_w, TASKBAR_H - 1, col_white,
+                      fi == focused ? 26 : 14);
+
+    draw_folder(T.pin_x + 14, bar_y + TASKBAR_H / 2 - 9, 24, 19,
+                col_folder, col_folder_tab);
+    fb_text_aa(T.pin_x + 48, text_y, "File Explorer", col_white, true);
+
+    if (files_open)
+        fb_fill_rect(T.pin_x + 2, bar_y + TASKBAR_H - 3, T.pin_w - 4, 3,
+                     fi == focused ? col_accent : col_title_off);
+
+    /* Then one button per remaining window, flat, with the same underline. */
+    int bx    = T.btn_x;
+    int btn_w = T.btn_w;
+    int clock_w = T.clock_w;
 
     for (int i = 0; i < window_count; i++) {
+        if (windows[i].kind == WIN_FILES)
+            continue;
         if (bx + btn_w > SCR_W - clock_w)
             break;
 
@@ -577,9 +1020,10 @@ static bool handle_click(int mx, int my)
             start_menu_open = false;
 
             if (item == 0) show_window(WIN_TERMINAL);
-            else if (item == 1) show_window(WIN_STATS);
-            else if (item == 2) wallpaper_next();
-            else if (item == 3) return false;
+            else if (item == 1) show_window(WIN_FILES);
+            else if (item == 2) show_window(WIN_STATS);
+            else if (item == 3) wallpaper_next();
+            else if (item == 4) return false;
 
             return true;
         }
@@ -588,39 +1032,27 @@ static bool handle_click(int mx, int my)
     }
 
     if (my >= bar_y) {
-        /* These have to agree with draw_taskbar. Keeping the geometry in two
-         * places is the usual way a button stops lining up with the thing it
-         * activates, so both use the same expressions. */
-        int start_w  = TASKBAR_H + 14;
-        int search_x = start_w + 6;
-        int search_w = 300;
+        taskbar_layout_t T;
+        taskbar_layout(&T);
 
-        if (search_w > SCR_W / 4)
-            search_w = SCR_W / 4;
-
-        if (mx < start_w) {
+        if (mx < T.start_w) {
             start_menu_open = !start_menu_open;
             return true;
         }
 
-        int bx = search_x + search_w + 10;
-        int btn_w = 190;
-        int clock_w = 130;
+        int hit = -1;
 
-        for (int i = 0; i < window_count; i++) {
-            if (bx + btn_w > SCR_W - clock_w)
-                break;
+        if (in_rect(mx, my, T.pin_x, bar_y, T.pin_w, TASKBAR_H))
+            hit = window_of_kind(WIN_FILES);
+        else
+            hit = taskbar_button_window(&T, mx, my);
 
-            if (in_rect(mx, my, bx, bar_y, btn_w, TASKBAR_H)) {
-                windows[i].visible = !windows[i].visible;
-                if (windows[i].visible) {
-                    raise_window(i);
-                    focused = window_count - 1;
-                }
-                return true;
+        if (hit >= 0) {
+            windows[hit].visible = !windows[hit].visible;
+            if (windows[hit].visible) {
+                raise_window(hit);
+                focused = window_count - 1;
             }
-
-            bx += btn_w + 2;
         }
 
         return true;
@@ -637,6 +1069,12 @@ static bool handle_click(int mx, int my)
 
         if (in_rect(mx, my, bx, by, bs, bs)) {
             windows[i].visible = false;
+            return true;
+        }
+
+        if (windows[i].kind == WIN_FILES && files_click(&windows[i], mx, my)) {
+            raise_window(i);
+            focused = window_count - 1;
             return true;
         }
 
@@ -714,6 +1152,14 @@ void gui_run(void)
     col_search_fg = fb_rgb(186, 190, 200);
     col_menu      = fb_rgb(32,  36,  46);
     col_menu_fg   = fb_rgb(238, 240, 245);
+    col_head      = fb_rgb(232, 234, 239);
+    col_list_bg   = fb_rgb(252, 252, 253);
+    col_list_sel  = fb_rgb(58,  110, 178);
+    col_list_sel_off = fb_rgb(214, 220, 230);
+    col_pane      = fb_rgb(24,  28,  36);
+    col_paper     = fb_rgb(250, 250, 252);
+    col_folder    = fb_rgb(232, 184, 92);
+    col_folder_tab= fb_rgb(206, 158, 66);
     col_white     = fb_rgb(255, 255, 255);
     col_black     = fb_rgb(0,   0,   0);
 
@@ -721,14 +1167,26 @@ void gui_run(void)
      * and the terminal then takes the width that is left. Sizing the terminal
      * first as a fraction of the screen left the two overlapping on startup:
      * correct behaviour from the window manager, but a poor first impression. */
-    int sw = 17 * CHROME_W;
+    /* A column down the right-hand side holds the stats panel and the file
+     * manager; the terminal takes the rest. Three windows that open on top of
+     * each other are correct behaviour from a window manager and a poor first
+     * impression, so the initial arrangement does not overlap. */
+    int rw = (SCR_W * 43) / 100;
+
+    if (rw < 26 * CHROME_W) rw = 26 * CHROME_W;
+    if (rw > SCR_W / 2)     rw = SCR_W / 2;
+
+    int sw = rw;
     int sh = 5 * (CHROME_H + 5) + TITLE_H + 24;
 
     int tw = SCR_W - sw - 34;
     int th = SCR_H - TASKBAR_H - 60;
 
-    if (tw < 40 * CELL_W)
+    if (tw < 40 * CELL_W) {
         tw = SCR_W - 20;        /* too narrow to sit alongside; use full width */
+        rw = SCR_W - 24;
+        sw = rw;
+    }
 
     term_cols = (tw - 2 * BORDER - 8) / CELL_W;
     term_rows = (th - TITLE_H - 2 * BORDER - 8) / CELL_H;
@@ -743,12 +1201,23 @@ void gui_run(void)
 
     term_clear();
 
-    window_count = 2;
+    int fy = 30 + sh + 14;
+    int fh = SCR_H - TASKBAR_H - fy - 20;
+
+    if (fh < 6 * (CHROME_H + 8))
+        fh = 6 * (CHROME_H + 8);
+
+    window_count = 3;
     windows[0] = (window_t){ SCR_W - sw - 12, 30, sw, sh,
                              "System", WIN_STATS, true };
-    windows[1] = (window_t){ 10, 40, tw, th,
+    windows[1] = (window_t){ SCR_W - rw - 12, fy, rw, fh,
+                             "File Explorer", WIN_FILES, true };
+    windows[2] = (window_t){ 10, 40, tw, th,
                              "Terminal", WIN_TERMINAL, true };
-    focused = 1;
+    focused = 2;
+
+    files_sel = 0;
+    files_scroll = 0;
 
     for (int i = 0; i < window_count; i++)
         clamp_window(&windows[i]);
@@ -834,13 +1303,22 @@ void gui_run(void)
         int wheel = mouse_take_wheel();
         if (wheel != 0) {
             for (int i = window_count - 1; i >= 0; i--) {
-                if (!windows[i].visible || windows[i].kind != WIN_TERMINAL)
+                if (!windows[i].visible)
                     continue;
                 if (!in_rect(mouse_x(), mouse_y(), windows[i].x, windows[i].y,
                              windows[i].w, windows[i].h))
                     continue;
 
-                term_scroll_view(wheel * 3);
+                if (windows[i].kind == WIN_TERMINAL) {
+                    term_scroll_view(wheel * 3);
+                } else if (windows[i].kind == WIN_FILES) {
+                    files_scroll -= wheel * 2;
+                    if (files_scroll < 0)
+                        files_scroll = 0;
+                } else {
+                    break;      /* nothing in this window scrolls */
+                }
+
                 dirty = true;
                 scene_dirty = true;
                 break;
@@ -853,8 +1331,14 @@ void gui_run(void)
             dirty = true;
         }
 
-        if (pit_ticks() - last_frame >= 25)
+        if (pit_ticks() - last_frame >= 25) {
             dirty = true;
+
+            /* The stats panel and the file listing are both read from live
+             * state rather than cached, so the periodic frame has to rebuild
+             * the scene or neither would ever change. */
+            scene_dirty = true;
+        }
 
         if (!dirty) {
             task_yield();
@@ -883,6 +1367,8 @@ void gui_run(void)
 
                 if (windows[i].kind == WIN_TERMINAL)
                     draw_terminal(&windows[i], i == focused);
+                else if (windows[i].kind == WIN_FILES)
+                    draw_files(&windows[i], i == focused);
                 else
                     draw_stats(&windows[i]);
             }

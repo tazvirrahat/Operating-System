@@ -104,7 +104,7 @@ console (VGA + serial)   output first: nothing after this is debuggable without 
 | Graphics adapter | `svga.c`, `svga3d.c` | VMware SVGA-II registers and command FIFO; 3D pipeline when exposed |
 | Framebuffer | `fb.c` | 32-bit drawing, alpha blending, rounded rectangles, shadows, dirty rectangles |
 | Anti-aliased text | `font_atlas.c`, `fbcon.c` | Greyscale coverage atlases baked at build time from a TrueType face |
-| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback |
+| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback, file manager with preview |
 | Wallpaper | `wallpaper.c` | Five interpolated gradients with an optional vignette |
 | Filesystem | `fs.c` | Flat namespace, growable heap-backed files, RTC timestamps |
 | Shell | `shell.c` | 25 commands, tokeniser, dispatch table, 16-entry command history |
@@ -458,7 +458,7 @@ All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus bo
 - Faults contained: the offending task dies, the kernel and shell continue
 - Shell with 25 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
 - PCI bus enumeration, and a VMware SVGA-II driver using the adapter's command FIFO
-- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, and a terminal with mouse-wheel scrollback
+- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, a terminal with mouse-wheel scrollback, and a file manager pinned to the taskbar
 - Anti-aliased text rendered from greyscale coverage atlases generated at build time
 - An in-memory filesystem with create, read, write, append and delete, growable allocations, and per-file timestamps
 - Atomic console output: `kprintf` defers preemption so concurrent tasks cannot splice each other's lines
