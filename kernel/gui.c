@@ -81,6 +81,7 @@ static int       drag_cache_w, drag_cache_h;
 static bool      drag_capture;     /* grab the pixels on the next repaint */
 static int       drag_prev_x, drag_prev_y;
 static bool      drag_moved;
+static uint32_t  drag_last_frame;
 static bool start_menu_open;
 
 static uint32_t col_desktop, col_face, col_edge, col_shade;
@@ -3871,6 +3872,40 @@ static void repaint_region(int x, int y, int w, int h, int except)
         draw_taskbar();
 }
 
+/* Repaint the part of `old` that `new` does not cover.
+ *
+ * Restoring the whole of the old rectangle redraws wallpaper that the window
+ * is about to cover again anyway. On a slow drag the genuinely uncovered part
+ * is a strip a few pixels wide, and the difference is most of the work.
+ */
+static void repaint_uncovered(int ox, int oy, int w, int h,
+                              int nx, int ny, int except)
+{
+    /* No overlap at all: the whole of the old position is exposed. */
+    if (!rects_overlap(ox, oy, w, h, nx, ny, w, h)) {
+        repaint_region(ox, oy, w, h, except);
+        return;
+    }
+
+    /* The band above or below the new position. */
+    if (ny > oy)
+        repaint_region(ox, oy, w, ny - oy, except);
+    else if (ny < oy)
+        repaint_region(ox, ny + h, w, oy - ny, except);
+
+    /* The band to the left or right, limited to the rows the two share so the
+     * corner is not painted twice. */
+    int y0 = oy > ny ? oy : ny;
+    int y1 = (oy + h) < (ny + h) ? (oy + h) : (ny + h);
+
+    if (y1 > y0) {
+        if (nx > ox)
+            repaint_region(ox, y0, nx - ox, y1 - y0, except);
+        else if (nx < ox)
+            repaint_region(nx + w, y0, ox - nx, y1 - y0, except);
+    }
+}
+
 static void drag_release(void)
 {
     if (drag_cache) {
@@ -3885,7 +3920,8 @@ static void drag_release(void)
 
 /* One drag step. Returns false if the pixels were not available, in which case
  * the caller falls back to rebuilding the scene. */
-static bool draw_drag_step(void)
+static bool draw_drag_step(int old_cx, int old_cy, int old_cw, int old_ch,
+                           bool had_cursor)
 {
     window_t *win = &windows[dragging];
 
@@ -3921,30 +3957,67 @@ static bool draw_drag_step(void)
     if (!drag_cache)
         return false;
 
+    /* The pointer moves at the rate the mouse reports; the window does not
+     * have to.
+     *
+     * Every window frame rewrites the whole of it into video memory -- for a
+     * near-fullscreen window that is megabytes of uncached, hypervisor-
+     * intercepted writes -- and the mouse reports faster than that is worth
+     * doing. Real hardware sidesteps this with a cursor plane the display
+     * controller overlays for free, so the pointer never costs a redraw at
+     * all. This is the same split done in software: the pointer is repainted
+     * every packet, the window at 50 Hz, and the two rectangles are tiny and
+     * huge respectively.
+     */
+    if (drag_moved && (int32_t)(pit_ticks() - drag_last_frame) < 2) {
+        cursor_draw();
+
+        if (had_cursor)
+            fb_copy_rect(old_cx, old_cy, old_cw, old_ch);
+
+        fb_copy_rect(cursor_saved_x, cursor_saved_y,
+                     cursor_saved_w, cursor_saved_h);
+        fb_reset_dirty();
+        return true;        /* the window catches up on the next frame */
+    }
+
     int ox = drag_prev_x, oy = drag_prev_y;
 
     if (win->x != ox || win->y != oy) {
-        repaint_region(ox, oy, drag_cache_w, drag_cache_h, dragging);
+        repaint_uncovered(ox, oy, drag_cache_w, drag_cache_h,
+                          win->x, win->y, dragging);
         fb_write_rect(win->x, win->y, drag_cache_w, drag_cache_h, drag_cache);
     }
 
     cursor_draw();
 
-    /* Present the accumulated dirty box rather than pushing hand-picked
-     * rectangles.
+    /* Push the rectangles that changed, not the box that contains them.
      *
-     * The first version copied the old and new window rectangles and the
-     * cursor explicitly, and left a trail of ghost pointers: cursor_erase
-     * cleans the backbuffer where the pointer used to be, and that rectangle
-     * was in none of the three. Every drawing call already records what it
-     * touched, so letting the tracker answer the question is both shorter and
-     * correct by construction. During a drag the box is the window plus a few
-     * pixels of travel, which is the saving this path exists for. */
-    fb_present();
+     * fb_present copies the bounding box of everything marked dirty, and here
+     * that box spans the old window position, the new one, and both pointer
+     * positions -- most of the desktop. Video memory is uncached and, under a
+     * hypervisor, every write is intercepted, so the bytes copied are the
+     * cost. Worse, a copy that large is not finished within one scanout, so
+     * the display shows it half-applied and the window appears to vanish and
+     * refill.
+     *
+     * Four disjoint copies instead. The old pointer rectangle is one of them:
+     * leaving it out is what smeared ghost cursors across the screen the
+     * first time this was written, because cursor_erase cleans the backbuffer
+     * where the pointer used to be and nothing then copied it forward. */
+    if (had_cursor)
+        fb_copy_rect(old_cx, old_cy, old_cw, old_ch);
+
+    fb_copy_rect(ox, oy, drag_cache_w, drag_cache_h);
+    fb_copy_rect(win->x, win->y, drag_cache_w, drag_cache_h);
+    fb_copy_rect(cursor_saved_x, cursor_saved_y,
+                 cursor_saved_w, cursor_saved_h);
+    fb_reset_dirty();
 
     drag_prev_x = win->x;
     drag_prev_y = win->y;
     drag_moved  = false;
+    drag_last_frame = pit_ticks();
 
     return true;
 }
@@ -4554,7 +4627,8 @@ void gui_run(void)
 
         cursor_erase();
 
-        if (dragging >= 0 && !scene_dirty && draw_drag_step()) {
+        if (dragging >= 0 && !scene_dirty &&
+            draw_drag_step(cx, cy, cw, ch, had_cursor)) {
             /* Nothing further: the step pushed its own rectangles. */
         } else if (scene_dirty) {
             scene_dirty = false;
@@ -4609,8 +4683,20 @@ void gui_run(void)
                          cursor_saved_w, cursor_saved_h);
             fb_reset_dirty();
         } else {
+            /* Moving the pointer changes two small rectangles: where it was
+             * and where it is. Their bounding box, which is what fb_present
+             * would copy, grows with how fast the mouse is moving -- a quick
+             * flick across the screen turned a 4 KB update into a full-width
+             * one, and that copy is slow enough to be seen as the pointer
+             * blinking out. */
             cursor_draw();
-            fb_present();
+
+            if (had_cursor)
+                fb_copy_rect(cx, cy, cw, ch);
+
+            fb_copy_rect(cursor_saved_x, cursor_saved_y,
+                         cursor_saved_w, cursor_saved_h);
+            fb_reset_dirty();
         }
 
         /* One present per frame for the full-scene and cursor-only paths.
