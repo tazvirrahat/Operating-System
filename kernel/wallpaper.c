@@ -46,7 +46,15 @@ static int xmap_for_w;
 
 static uint32_t row_buf[MAX_SCREEN_W];
 
-static void draw_picture(int w, int h)
+/* Draw the part of the wallpaper inside the clip rectangle.
+ *
+ * A repaint that covers the whole desktop is two million palette lookups and
+ * eight megabytes of copying. Most repaints do not need the whole desktop:
+ * when a window moves, only the strip it uncovered has changed. Restricting
+ * the work to that strip is what makes dragging cost a few hundred kilobytes
+ * instead of the entire screen.
+ */
+static void draw_picture(int w, int h, int cx, int cy, int cw, int ch)
 {
     int iw = wallpaper_image_w;
     int ih = wallpaper_image_h;
@@ -71,23 +79,41 @@ static void draw_picture(int w, int h)
     /* Nearest neighbour. The picture is stored at half the screen dimensions,
      * so in the usual case every source pixel simply becomes a 2x2 block, and
      * a filter would cost time to soften something already being enlarged. */
-    for (int y = 0; y < h; y++) {
+    for (int y = cy; y < cy + ch; y++) {
+        if (y < 0 || y >= h)
+            continue;
+
         const uint8_t *src = wallpaper_image_pixels + (y * ih / h) * iw;
 
-        for (int x = 0; x < w; x++)
-            row_buf[x] = palette[src[xmap[x]]];
+        for (int x = cx; x < cx + cw; x++)
+            row_buf[x - cx] = palette[src[xmap[x]]];
 
-        fb_write_rect(0, y, w, 1, row_buf);
+        fb_write_rect(cx, y, cw, 1, row_buf);
     }
 }
 
 void wallpaper_draw(int w, int h)
 {
+    wallpaper_draw_clip(w, h, 0, 0, w, h);
+}
+
+void wallpaper_draw_clip(int w, int h, int cx, int cy, int cw, int ch)
+{
+    /* Clamp the clip to the desktop, so a caller can pass a window rectangle
+     * that hangs off the edge without checking first. */
+    if (cx < 0) { cw += cx; cx = 0; }
+    if (cy < 0) { ch += cy; cy = 0; }
+    if (cx + cw > w) cw = w - cx;
+    if (cy + ch > h) ch = h - cy;
+
+    if (cw <= 0 || ch <= 0)
+        return;
+
     /* An unsupplied picture is not an error: the build works without one, and
      * the desktop falls back to the first gradient. */
     if (current == STYLE_PICTURE) {
         if (wallpaper_image_w > 0 && wallpaper_image_h > 0) {
-            draw_picture(w, h);
+            draw_picture(w, h, cx, cy, cw, ch);
             return;
         }
 
@@ -100,13 +126,23 @@ void wallpaper_draw(int w, int h)
     int bh = (h + bands - 1) / bands;
 
     for (int i = 0; i < bands; i++) {
+        int by = i * bh;
+
+        /* Skip bands that fall outside the clip entirely. */
+        if (by + bh <= cy || by >= cy + ch)
+            continue;
+
         /* Linear interpolation in integer arithmetic: no floating point is
          * available, and none is needed for 96 steps. */
         int r = s->r0 + (s->r1 - s->r0) * i / bands;
         int g = s->g0 + (s->g1 - s->g0) * i / bands;
         int b = s->b0 + (s->b1 - s->b0) * i / bands;
 
-        fb_fill_rect(0, i * bh, w, bh, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
+        int y0 = by > cy ? by : cy;
+        int y1 = (by + bh) < (cy + ch) ? (by + bh) : (cy + ch);
+
+        fb_fill_rect(cx, y0, cw, y1 - y0,
+                     fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
 
     if (!s->vignette)
@@ -122,8 +158,19 @@ void wallpaper_draw(int w, int h)
         int inset = i * (w / 60);
         uint32_t a = (uint32_t)(steps - i);
 
-        fb_blend_rect(0, 0, inset, h, black, a);
-        fb_blend_rect(w - inset, 0, inset, h, black, a);
+        /* Each band is intersected with the clip rather than drawn whole:
+         * blending outside it would darken pixels a second time. */
+        int lx = 0, lw = inset;
+        if (lx < cx) { lw -= cx - lx; lx = cx; }
+        if (lx + lw > cx + cw) lw = cx + cw - lx;
+        if (lw > 0)
+            fb_blend_rect(lx, cy, lw, ch, black, a);
+
+        int rx = w - inset, rw = inset;
+        if (rx < cx) { rw -= cx - rx; rx = cx; }
+        if (rx + rw > cx + cw) rw = cx + cw - rx;
+        if (rw > 0)
+            fb_blend_rect(rx, cy, rw, ch, black, a);
     }
 }
 

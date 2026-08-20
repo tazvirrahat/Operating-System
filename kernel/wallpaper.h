@@ -15,6 +15,14 @@
 /* Draw the current wallpaper into the region above the taskbar. */
 void wallpaper_draw(int w, int h);
 
+/* Draw only the part of the wallpaper inside the clip rectangle.
+ *
+ * The desktop is repainted far more often than it changes. When a window
+ * moves, the only wallpaper that needs redrawing is the strip it uncovered,
+ * and at 1920x1080 that is the difference between a few hundred kilobytes and
+ * the whole screen. */
+void wallpaper_draw_clip(int w, int h, int cx, int cy, int cw, int ch);
+
 void        wallpaper_next(void);
 void        wallpaper_set(int index);
 int         wallpaper_current(void);
