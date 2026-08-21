@@ -3878,20 +3878,34 @@ static void repaint_region(int x, int y, int w, int h, int except)
  * is about to cover again anyway. On a slow drag the genuinely uncovered part
  * is a strip a few pixels wide, and the difference is most of the work.
  */
+static void repaint_strip(int x, int y, int w, int h, int except, bool push)
+{
+    if (w <= 0 || h <= 0)
+        return;
+
+    repaint_region(x, y, w, h, except);
+
+    /* Pushed individually when the caller has nothing else to present. The
+     * bounding box of the strips is the whole old rectangle, so presenting
+     * them together would hand back everything the strips save. */
+    if (push)
+        fb_copy_rect(x, y, w, h);
+}
+
 static void repaint_uncovered(int ox, int oy, int w, int h,
-                              int nx, int ny, int except)
+                              int nx, int ny, int except, bool push)
 {
     /* No overlap at all: the whole of the old position is exposed. */
     if (!rects_overlap(ox, oy, w, h, nx, ny, w, h)) {
-        repaint_region(ox, oy, w, h, except);
+        repaint_strip(ox, oy, w, h, except, push);
         return;
     }
 
     /* The band above or below the new position. */
     if (ny > oy)
-        repaint_region(ox, oy, w, ny - oy, except);
+        repaint_strip(ox, oy, w, ny - oy, except, push);
     else if (ny < oy)
-        repaint_region(ox, ny + h, w, oy - ny, except);
+        repaint_strip(ox, ny + h, w, oy - ny, except, push);
 
     /* The band to the left or right, limited to the rows the two share so the
      * corner is not painted twice. */
@@ -3900,9 +3914,9 @@ static void repaint_uncovered(int ox, int oy, int w, int h,
 
     if (y1 > y0) {
         if (nx > ox)
-            repaint_region(ox, y0, nx - ox, y1 - y0, except);
+            repaint_strip(ox, y0, nx - ox, y1 - y0, except, push);
         else if (nx < ox)
-            repaint_region(nx + w, y0, ox - nx, y1 - y0, except);
+            repaint_strip(nx + w, y0, ox - nx, y1 - y0, except, push);
     }
 }
 
@@ -3983,13 +3997,83 @@ static bool draw_drag_step(int old_cx, int old_cy, int old_cw, int old_ch,
 
     int ox = drag_prev_x, oy = drag_prev_y;
 
-    if (win->x != ox || win->y != oy) {
-        repaint_uncovered(ox, oy, drag_cache_w, drag_cache_h,
-                          win->x, win->y, dragging);
+    bool moved = (win->x != ox || win->y != oy);
+
+    /* Let the adapter move the pixels if it can.
+     *
+     * SVGA_CMD_RECT_COPY moves a rectangle inside video memory without the
+     * CPU reading or writing any of it. That is the whole cost of dragging a
+     * large window: the backbuffer write is ordinary cached RAM and cheap,
+     * but the copy into video memory is uncached and, under a hypervisor,
+     * intercepted per access.
+     *
+     * The backbuffer is still updated, because every later partial repaint
+     * reads from it and it has to agree with what is on screen.
+     */
+/* Hand window moves to the adapter's blit engine.
+ *
+ * Off by default, because it was measured and it lost. Over a ten-second
+ * drag under QEMU's emulated VMware adapter the idle task got 33% of the
+ * ticks with this off and 27-30% with it on, repeatably.
+ *
+ * The reason is that neither half of the trade pays there. RECT_COPY is
+ * executed by the host CPU, so no real blit engine is saved; and the
+ * ordering it forces costs more than the copy did. The FIFO runs
+ * asynchronously, so before the CPU may write the uncovered strips into
+ * video memory it has to wait for the adapter to finish reading the
+ * rectangle it is moving -- and svga_sync polls a register over an I/O
+ * port, which is a VM exit per read, every frame.
+ *
+ * On a VMware Workstation guest the same command is backed by the host's
+ * GPU, where the blit really is free and the trade may well go the other
+ * way. Flip this to true and compare the idle column in `tasks` across a
+ * drag; that is the measurement, and it should be made on the machine the
+ * answer is wanted for rather than assumed from this one.
+ */
+static const bool accel_moves = false;
+
+    bool accel = accel_moves && moved && svga_available() && svga_can_copy();
+
+    if (moved) {
         fb_write_rect(win->x, win->y, drag_cache_w, drag_cache_h, drag_cache);
+
+        if (accel) {
+            /* The pointer is erased in the backbuffer but not yet on screen.
+             * Push that erase first, or the adapter copies the old pointer
+             * along with the window and smears it across the desktop. */
+            if (had_cursor)
+                fb_copy_rect(old_cx, old_cy, old_cw, old_ch);
+
+            svga_copy_rect(ox, oy, win->x, win->y,
+                           drag_cache_w, drag_cache_h);
+
+            /* The FIFO runs asynchronously. The strips written next are CPU
+             * writes straight into video memory, and some of them touch the
+             * rectangle the adapter is still reading, so the two have to be
+             * ordered. */
+            svga_sync();
+        }
+
+        repaint_uncovered(ox, oy, drag_cache_w, drag_cache_h,
+                          win->x, win->y, dragging, accel);
     }
 
     cursor_draw();
+
+    if (accel) {
+        /* The window never went through the CPU: only the pointer and the
+         * uncovered strips did, and those have been pushed already. */
+        fb_copy_rect(cursor_saved_x, cursor_saved_y,
+                     cursor_saved_w, cursor_saved_h);
+        fb_reset_dirty();
+
+        drag_prev_x = win->x;
+        drag_prev_y = win->y;
+        drag_moved  = false;
+        drag_last_frame = pit_ticks();
+
+        return true;
+    }
 
     /* Push the rectangles that changed, not the box that contains them.
      *
