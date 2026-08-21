@@ -82,6 +82,28 @@ static bool      drag_capture;     /* grab the pixels on the next repaint */
 static int       drag_prev_x, drag_prev_y;
 static bool      drag_moved;
 static uint32_t  drag_last_frame;
+
+/* Hand window moves to the adapter's blit engine.
+ *
+ * Off by default, because it was measured and it lost. Over a ten-second
+ * drag under QEMU's emulated VMware adapter the idle task got 33% of the
+ * ticks with this off and 27-30% with it on, repeatably.
+ *
+ * The reason is that neither half of the trade pays there. RECT_COPY is
+ * executed by the host CPU, so no real blit engine is saved; and the
+ * ordering it forces costs more than the copy did. The FIFO runs
+ * asynchronously, so before the CPU may write the uncovered strips into
+ * video memory it has to wait for the adapter to finish reading the
+ * rectangle it is moving -- and svga_sync polls a register over an I/O
+ * port, which is a VM exit per read, every frame.
+ *
+ * On a VMware Workstation guest the same command is backed by the host's
+ * GPU, where the blit really is free and the trade may well go the other
+ * way. Flip this to true and compare the idle column in `tasks` across a
+ * drag; that is the measurement, and it should be made on the machine the
+ * answer is wanted for rather than assumed from this one.
+ */
+static const bool accel_moves = false;
 static bool start_menu_open;
 
 static uint32_t col_desktop, col_face, col_edge, col_shade;
@@ -496,6 +518,7 @@ static void files_layout(const window_t *win, files_layout_t *L)
 
     L->status_y = L->cy + L->ch - CHROME_H - 2;
 
+
     int body = L->status_y - L->list_y - 8;
 
     L->rows = body / L->row_h;
@@ -801,7 +824,8 @@ typedef struct {
     int trace_y, trace_h;
     int head_y;
     int list_x, list_y, list_w, row_h, rows;
-    int pid_x, name_x, state_x, cpu_x, ticks_x;
+    int pid_x, name_x, state_x, cpu_x, mem_x, ticks_x;
+    int summary_y, summary_h;
     int status_y;
 } tm_layout_t;
 
@@ -834,7 +858,14 @@ static void tm_layout(const window_t *win, tm_layout_t *L)
     L->list_w  = L->cw;
     L->status_y = L->cy + L->ch - CHROME_H - 2;
 
-    int body = L->status_y - L->list_y - 8;
+    /* Two summary rows sit between the list and the status line: one for
+     * memory, one for the graphics adapter. They are the totals the list
+     * cannot show, which is the same split Task Manager makes between its
+     * process list and the figures underneath it. */
+    L->summary_h = 2 * (CHROME_H + 6);
+    L->summary_y = L->status_y - L->summary_h - 6;
+
+    int body = L->summary_y - L->list_y - 8;
     L->rows = body / L->row_h;
     if (L->rows < 1)
         L->rows = 1;
@@ -843,7 +874,8 @@ static void tm_layout(const window_t *win, tm_layout_t *L)
     L->name_x  = L->pid_x + fb_text_width("PID", true) + 36;
     L->state_x = L->name_x + fb_text_width("worker_cxxxx", true);
     L->cpu_x   = L->state_x + fb_text_width("runningxx", true);
-    L->ticks_x = L->cpu_x + fb_text_width("CPU 100%", true) + 16;
+    L->mem_x   = L->cpu_x + fb_text_width("CPU 100%", true) + 16;
+    L->ticks_x = L->mem_x + fb_text_width("Memory 9999 KB", true);
 }
 
 static task_t *tm_task_at(int row)
@@ -916,6 +948,7 @@ static void draw_tm(const window_t *win, bool active)
     fb_text_aa(L.name_x, L.head_y, "Name", col_title_off, true);
     fb_text_aa(L.state_x, L.head_y, "State", col_title_off, true);
     fb_text_aa(L.cpu_x, L.head_y, "CPU", col_title_off, true);
+    fb_text_aa(L.mem_x, L.head_y, "Memory", col_title_off, true);
     fb_text_aa(L.ticks_x, L.head_y, "Ticks", col_title_off, true);
 
     fb_fill_rect(L.list_x, L.list_y, L.list_w, L.rows * L.row_h, col_list_bg);
@@ -935,9 +968,29 @@ static void draw_tm(const window_t *win, bool active)
             fg = active ? col_white : col_black;
         }
 
-        char pid[12], ticks[12], cpu[16];
+        char pid[12], ticks[12], cpu[16], mem[16];
         u32_to_str((uint32_t)t->id, pid);
         u32_to_str(t->ticks, ticks);
+
+        /* A task's memory here is the stack it was given. Nothing tracks
+         * which heap blocks belong to which task -- kmalloc has no owner --
+         * so reporting a share of the heap would be a number made up to fill
+         * a column. The stack is what a task actually holds. */
+        int mn = 0;
+
+        if (t->stack_size == 0) {
+            /* The kernel task runs on the stack boot.asm set up, which
+             * was never allocated and has no recorded size. Printing
+             * 0 KB would read as "uses no memory", which is the
+             * opposite of true. */
+            mem[mn++] = 'b'; mem[mn++] = 'o';
+            mem[mn++] = 'o'; mem[mn++] = 't';
+        } else {
+            mn += u32_to_str(t->stack_size / 1024, mem);
+            mem[mn++] = ' '; mem[mn++] = 'K'; mem[mn++] = 'B';
+        }
+
+        mem[mn] = '\0';
         int cn = u32_to_str(tm_recent_pct(t->id), cpu);
         cpu[cn++] = '%';
         cpu[cn] = '\0';
@@ -947,8 +1000,74 @@ static void draw_tm(const window_t *win, bool active)
         fb_text_aa(L.state_x, y + (L.row_h - CHROME_H) / 2,
                    task_state_name(t->state), fg, true);
         fb_text_aa(L.cpu_x, y + (L.row_h - CHROME_H) / 2, cpu, fg, true);
+        fb_text_aa(L.mem_x, y + (L.row_h - CHROME_H) / 2, mem, fg, true);
         fb_text_aa(L.ticks_x, y + (L.row_h - CHROME_H) / 2, ticks, fg, true);
     }
+
+    /* ---- memory ---------------------------------------------------- */
+    heap_stats_t heap;
+    heap_get_stats(&heap);
+
+    uint32_t used_kb  = heap.used_bytes / 1024;
+    uint32_t total_kb = heap.total_bytes / 1024;
+    uint32_t pct = total_kb ? (used_kb * 100) / total_kb : 0;
+
+    int bar_x = L.cx + fb_text_width("Memory  ", true);
+    int bar_w = L.cw / 3;
+    int row_a = L.summary_y;
+    int row_b = L.summary_y + CHROME_H + 6;
+
+    fb_text_aa(L.cx, row_a, "Memory", col_title_off, true);
+
+    fb_fill_rect(bar_x, row_a + 3, bar_w, CHROME_H - 4, col_list_sel_off);
+    fb_fill_rect(bar_x, row_a + 3, (int)((uint32_t)bar_w * pct / 100),
+                 CHROME_H - 4, col_list_sel);
+
+    char mline[64];
+    n = 0;
+    n += u32_to_str(used_kb, mline + n);
+    mline[n++] = ' '; mline[n++] = '/'; mline[n++] = ' ';
+    n += u32_to_str(total_kb, mline + n);
+    mline[n++] = ' '; mline[n++] = 'K'; mline[n++] = 'B';
+    mline[n++] = ' '; mline[n++] = ' '; mline[n++] = '(';
+    n += u32_to_str(pct, mline + n);
+    mline[n++] = '%'; mline[n++] = ')';
+    mline[n] = '\0';
+    fb_text_aa(bar_x + bar_w + 12, row_a, mline, col_black, true);
+
+    /* ---- graphics adapter -------------------------------------------- */
+    fb_text_aa(L.cx, row_b, "GPU", col_title_off, true);
+
+    char gline[80];
+    n = 0;
+
+    if (!svga_available()) {
+        const char *none = "no accelerator - software rendering";
+        while (*none && n < (int)sizeof(gline) - 1)
+            gline[n++] = *none++;
+    } else {
+        const char *name = "VMware SVGA-II  ";
+        while (*name && n < (int)sizeof(gline) - 1)
+            gline[n++] = *name++;
+
+        /* What the adapter will actually do for us, rather than what it
+         * advertises: 3D is reported but not reachable on this guest. */
+        const char *caps = svga_can_copy() ? (svga_can_fill() ? "fill+copy"
+                                                              : "copy")
+                                           : (svga_can_fill() ? "fill" : "none");
+        while (*caps && n < (int)sizeof(gline) - 1)
+            gline[n++] = *caps++;
+
+        gline[n++] = ' '; gline[n++] = ' ';
+        n += u32_to_str(svga_command_count(), gline + n);
+
+        const char *tail = " commands";
+        while (*tail && n < (int)sizeof(gline) - 1)
+            gline[n++] = *tail++;
+    }
+
+    gline[n] = '\0';
+    fb_text_aa(bar_x, row_b, gline, col_black, true);
 
     uint32_t secs = pit_hz() ? pit_ticks() / pit_hz() : 0;
     char strip[64];
@@ -4010,33 +4129,11 @@ static bool draw_drag_step(int old_cx, int old_cy, int old_cw, int old_ch,
      * The backbuffer is still updated, because every later partial repaint
      * reads from it and it has to agree with what is on screen.
      */
-/* Hand window moves to the adapter's blit engine.
- *
- * Off by default, because it was measured and it lost. Over a ten-second
- * drag under QEMU's emulated VMware adapter the idle task got 33% of the
- * ticks with this off and 27-30% with it on, repeatably.
- *
- * The reason is that neither half of the trade pays there. RECT_COPY is
- * executed by the host CPU, so no real blit engine is saved; and the
- * ordering it forces costs more than the copy did. The FIFO runs
- * asynchronously, so before the CPU may write the uncovered strips into
- * video memory it has to wait for the adapter to finish reading the
- * rectangle it is moving -- and svga_sync polls a register over an I/O
- * port, which is a VM exit per read, every frame.
- *
- * On a VMware Workstation guest the same command is backed by the host's
- * GPU, where the blit really is free and the trade may well go the other
- * way. Flip this to true and compare the idle column in `tasks` across a
- * drag; that is the measurement, and it should be made on the machine the
- * answer is wanted for rather than assumed from this one.
- */
-static const bool accel_moves = false;
+
 
     bool accel = accel_moves && moved && svga_available() && svga_can_copy();
 
     if (moved) {
-        fb_write_rect(win->x, win->y, drag_cache_w, drag_cache_h, drag_cache);
-
         if (accel) {
             /* The pointer is erased in the backbuffer but not yet on screen.
              * Push that erase first, or the adapter copies the old pointer
@@ -4054,8 +4151,34 @@ static const bool accel_moves = false;
             svga_sync();
         }
 
+        /* Uncover first, then put the window back down on top of it.
+         *
+         * repaint_region paints whole windows, not just the part inside the
+         * damaged strip, so a neighbour that overlaps the dragged window gets
+         * drawn across it. Blitting the window first meant every frame of a
+         * drag ended with a neighbour painted over it, and the window only
+         * returned to the front on release, when the full rebuild put the
+         * z-order back. The order here is the z-order: background, then the
+         * windows under it, then the one being dragged. */
         repaint_uncovered(ox, oy, drag_cache_w, drag_cache_h,
                           win->x, win->y, dragging, accel);
+
+        fb_write_rect(win->x, win->y, drag_cache_w, drag_cache_h, drag_cache);
+
+        /* The taskbar is above every window, which the full rebuild gets
+         * right by drawing it last. Dragging a window across it has to do
+         * the same, or the window covers the bar while it moves and the bar
+         * reappears on release -- the same flip that painting the window
+         * under its neighbours caused. */
+        if (win->y + drag_cache_h > SCR_H - TASKBAR_H) {
+            draw_taskbar();
+
+            if (start_menu_open)
+                draw_start_menu();
+
+            if (accel)
+                fb_copy_rect(0, SCR_H - TASKBAR_H, SCR_W, TASKBAR_H);
+        }
     }
 
     cursor_draw();
