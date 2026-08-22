@@ -20,6 +20,66 @@ been doing all along. That distinction is worth saying out loud on camera.
 
 ---
 
+## Part 0 — The problem statement
+
+### The project
+
+A modern operating system is tens of millions of lines, and the mechanisms that
+make it an operating system — scheduling, address translation, privilege — are
+buried under decades of abstraction. You can use one for years without ever
+seeing them.
+
+**The problem:** demonstrate that those mechanisms are understood, not just
+described. Reading about a context switch is not the same as being able to point
+at the fifteen instructions that perform one.
+
+**The approach:** build a kernel small enough that every mechanism is visible and
+verifiable, on hardware real enough that the mechanisms are the genuine ones —
+a real IDT, real page tables, real ring transitions — rather than a simulation
+of them. Then make each one demonstrable, so the claim can be checked rather
+than taken on trust.
+
+**How it is verified:** 34 in-kernel checks run at every boot. They do not read
+back what the kernel printed; each one either turns a mechanism off to prove it
+was load-bearing, or reads a value the CPU itself wrote. `make test` boots
+headless and fails the build if any of them fail.
+
+### Per mechanism
+
+Every row is a decision, and in each one there was an obvious cheaper answer
+that was rejected for a stated reason. This is the table to have open if you are
+asked "why did you do it that way."
+
+| The problem | The obvious answer | What TazOS does | What that bought |
+|---|---|---|---|
+| Share one CPU between tasks | Let tasks yield when they feel like it | The timer interrupt takes the CPU away | One bad loop cannot freeze the machine. `preempt off` shows the difference directly |
+| Know when hardware needs attention | Poll every device in a loop | One interrupt vector per device | The CPU can halt when idle. In `top` the `kbd` counter stays still until you type |
+| Catch null-pointer bugs | Check pointers in software | Leave page 0 unmapped and let the MMU fault | Free, enforced on every access, and impossible to forget at a call site |
+| Stop user code touching hardware | Don't call the dangerous functions | Ring 3, with one `int 0x80` gate at privilege 3 | The CPU enforces it regardless of what the code says |
+| Draw a desktop at 1920x1080 | Redraw the screen every frame | Track what changed; save the pixels under the cursor | 8.3 MB per frame became two small rectangles |
+| Move a window | Redraw the scene at the new position | Rasterise once, then move pixels and repaint only the uncovered strip | Idle CPU during a drag went from 0% to 33% |
+| Get pixels to the display | Copy the box containing everything that changed | Copy the rectangles that changed | A fast pointer flick costs 4 KB instead of a full-width copy |
+| Put a photograph in the kernel | Embed a PNG and write a decoder | Decode at build time; store a palette and one index per pixel | No image decoder in the kernel, and 518 KB instead of 1.5 MB |
+| Render readable text | A bitmap font, or a TrueType parser in the kernel | Bake anti-aliased coverage atlases at build time | Real glyph shapes for one multiply per pixel, and no parser |
+| Make window moves faster still | Hand the blit to the GPU | Tried it, measured it, it was slower, left it off | An evidence-based decision instead of a plausible one |
+| Know that any of this works | Run it and see if it looks right | 34 checks that disable mechanisms or read CPU-written values | Regressions fail the build |
+
+### Where it is deliberately not better
+
+Saying this unprompted is worth more than being caught by it.
+
+- **Memory is not isolated between rings.** Instruction privilege is enforced by
+  the CPU; the address space is not separated. The whole first 4 MB is marked
+  user-accessible. Separating it properly would mean giving user code its own
+  linker section on its own pages — a scope decision, made and documented.
+- **The scheduler is round-robin only.** No priorities, no aging.
+- **It has never run on real hardware.** It is a GRUB rescue ISO and should boot
+  on a BIOS or CSM machine, but that has not been tried, and claiming otherwise
+  would be exactly the sort of unverified assertion the self-test exists to
+  avoid.
+
+---
+
 ## Part A — The machinery that never stops
 
 Each of these is running before you touch anything. The third column is the
@@ -269,12 +329,18 @@ kept and documented, is worth more than an optimisation that was never checked.
 Boot before recording; the self-test is a third of the budget. Start on the
 prompt.
 
-**0:00 — Frame the whole thing** *(15 s)*
-Have `top` running.
-> "Nothing is happening on this machine and the timer has fired four thousand
-> times. That counter is the operating system running. Everything I am about to
-> show you was already working before I typed anything — so rather than run
-> features, I want to show you why they exist and what they look like."
+**0:00 — The problem** *(20 s)*
+Have `top` running behind you.
+> "An operating system is tens of millions of lines, and the parts that make it
+> one — scheduling, address translation, privilege — are buried so deep you can
+> use a computer for years without seeing them. The problem I set myself was to
+> show I understand those mechanisms rather than describe them. So this is a
+> kernel small enough that every one of them is visible, on hardware real enough
+> that they are the genuine mechanisms."
+
+> "Nothing is happening on this machine right now and the timer has already
+> fired four thousand times. That counter is the operating system running.
+> Everything I am about to show you was working before I typed anything."
 
 **0:15 — Interrupts and the scheduler** *(45 s)* ★
 Point at the climbing `irqs timer` and `switches` in `top`. Type something and
@@ -320,9 +386,10 @@ Then Notepad → save → File Explorer.
 > comment."
 
 **2:50 — Close** *(10 s)*
-> "No operating system underneath any of it. It boots from GRUB, sets up its own
-> descriptor tables, drives the hardware directly, manages its own memory, and
-> draws its own desktop."
+> "No operating system underneath any of it — it boots from GRUB, sets up its
+> own descriptor tables, drives the hardware directly and draws its own desktop.
+> Memory is not isolated between rings and it has never run on real hardware.
+> Both were scope decisions, and both are written down."
 
 ---
 
