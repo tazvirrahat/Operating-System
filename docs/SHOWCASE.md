@@ -1,236 +1,149 @@
-# TazOS — click script
+# TazOS — three-minute walkthrough
 
-Boot it, type `gui` at the `>` prompt, and work down this list in order.
+## Before you record
 
-Each section tells you what the thing actually is, what you should expect to see
-on screen, which buttons to press, and roughly what to say over it. There is
-also a note on how to capture it as a picture, because a still that shows a
-contrast is worth more than a paragraph explaining one.
+Build with `dev`. Boot `vmware/MyOS.vmx`, wait for `>`, type `gui`. Then open
+**Task Manager** (drag it right, it stays open throughout), **Notepad** (click
+the white page once), and **Kernel Lab**. Move them apart so nothing overlaps.
 
----
+The 30–50 second self-test at boot does not go in the take. Start recording once
+the desktop is set up.
 
-## Idle
+Have these open in tabs, at the line, ready to cut to:
 
-**What it is.** When there is nothing to do, the CPU sleeps. It is not sitting
-in a loop burning cycles waiting for something to happen.
-
-**What you will see.** Task Manager, a row called **System idle**, and its Ticks
-number going up.
-
-**Clicks.** Start → **Task Manager**. Leave it open — you will want it for most
-of what follows. Point at **System idle**.
-
-**What to say.** "The clock is still ticking. The processor is halted until
-there is work for it."
-
-**Visual idea.** This is the one feature with no contrast shot yet, and it needs
-one, because "nothing is happening" is hard to photograph. Take two Task Manager
-captures: one at rest with idle Ticks racing ahead, and one with the three
-workers running where idle barely moves. Side by side, the same row tells the
-whole story.
+- `kernel/context.asm:23`
+- `kernel/task.c:348`
+- `kernel/gui.c:4322`
+- `kernel/sync.c:40`
 
 ---
 
-## Hog vs Notepad (sharing)
+## Beat 1 — Threads · 40s
 
-**What it is.** A hog is a program that burns the CPU on purpose and never
-waits its turn. Sharing is whether the timer lets anybody else get a look in.
+**Do**
 
-**What you will see.** Sharing off: the mouse and Notepad lock up for about
-three seconds, then everything comes back. Sharing on: you can type in Notepad
-while the hog is still sitting there in Task Manager.
+1. Point at **System idle** in Task Manager, Ticks climbing.
+2. Kernel Lab → **Background workers** → **Start 3 workers**.
+3. Point at the three `worker_` rows — different Ticks on each.
 
-**Clicks.**
+**Say**
 
-1. Start → **Notepad**. Click the white page.
-2. Start → **Kernel Lab**. Click **Hog vs Notepad**.
-3. Click **Run with sharing OFF**. Try typing in Notepad. Wait. The desktop dies
-   for about three seconds and then the hog exits on its own.
-4. Click the Notepad page. Click **Run with sharing ON**. Click the Notepad page
-   again and type. The letters show up as you go.
-5. Start → **Task Manager**. Find **hog**. Its Ticks are climbing — that is the
-   thread eating the CPU.
+> "That's Task Manager reading my scheduler, live. Right now the busiest thing
+> here is the idle task — no work, so the processor is halted."
+>
+> "Three threads. They show up straight away and each one's tick count climbs.
+> Different numbers, so time is genuinely being divided between them."
 
-**What to say.** "Off: one program takes the processor and Notepad never gets a
-turn. On: same hog, but the timer hands Notepad slices anyway. The hog has not
-got slower. Notepad has just been given a share."
+**Code** — `kernel/task.c:348`, `task_tick`.
 
-If you mash keys during the freeze they may all appear when it unfreezes, or
-they may not. Either is fine.
+> "That's it. It runs off the timer interrupt and it's the whole of preemption."
 
-**Visual idea.** You already have this one working — `preempt-hogged.png` and
-`preempt-sharing.png` are the pair, and `hog-notepad-live.png` catches the
-moment typing works. It is the template everything else here is trying to copy:
-the same screen twice, one thing changed, and the difference is obvious without
-a caption.
+Leave the workers running.
 
 ---
 
-## A thread is running
+## Beat 2 — Preemption · 50s
 
-**What it is.** A thread is a program the scheduler knows about. Ticks is how
-much CPU it has been given.
+**Do**
 
-**What you will see.** Extra rows in Task Manager with their Ticks numbers
-going up.
+1. Kernel Lab → **Hog vs Notepad** → **Run with sharing OFF**. Try to type in
+   Notepad. Nothing. Wait about three seconds.
+2. Click Notepad's page. **Run with sharing ON**. Click the page again. Type.
+3. Point at `hog` in Task Manager, ticks climbing.
 
-**Clicks.** Kernel Lab → **Background workers** → **Start 3 workers**. Then
-Start → **Task Manager** and watch the **worker_** rows.
+**Say**
 
-**What to say.** "Those three are running right now. They take turns, so Notepad
-still works. The freeze earlier was the Hog vs Notepad demo, not these."
+> "Now a program that never gives the CPU back. Sharing off, and it's taken the
+> whole machine — mouse is gone, Notepad won't take a key."
+>
+> "Same program, sharing on. Still running, still burning CPU, you can see it
+> there. But I can type. The timer takes the processor off it a hundred times a
+> second."
+>
+> "That's the difference between a machine one bad program can hang and one it
+> can't."
 
-Click **Stop the workers** when you are done.
+**Code** — `kernel/context.asm:23`.
 
-**Visual idea.** One capture with all three `worker_` rows visible and their
-Ticks at different values — different numbers on the same screen prove the
-scheduler is dividing time, not just listing processes. `hog-tm.png` already
-does this for the hog.
+> "Fifteen instructions. Save the registers, swap the stack pointer, and the
+> `ret` at the end lands in a different thread."
 
 ---
 
-## Two programs, one file
+## Beat 3 — What I optimised · 50s
 
-**What it is.** Two programs both writing `till.log` at the same time, like two
-copies of Notepad saving at once.
+**Do**
 
-**What you will see.** Unlocked, the letters come out mixed together
-(`ABAB…`). Locked, you get whole lines of A followed by whole lines of B. Same
-file both times — go and open it yourself.
+1. Drag a window around for a few seconds.
+2. Point at **System idle** — still getting CPU while you drag.
+3. Point at the **Memory** and **GPU** rows.
 
-**Clicks.**
+**Say**
+
+> "This used to take the entire processor. I measured it — over a ten-second
+> drag the idle task got zero ticks and the scheduler never switched once."
+>
+> "Every mouse packet was redrawing the whole desktop. Eight megabytes a frame
+> to move one rectangle. But the window's contents don't change while you drag
+> it, only where it is. So now it's drawn once and each frame just moves those
+> pixels and repaints the strip it uncovered."
+>
+> "Measured again after: a third of the CPU back, and you can see idle still
+> getting scheduled while I'm dragging."
+
+**Code** — `kernel/gui.c:4322`, `draw_drag_step`.
+
+---
+
+## Beat 4 — Locking, and the close · 25s
+
+**Do**
 
 1. Kernel Lab → **Two programs, one file (unlocked)** → **Write unlocked**.
-2. Start → **Notepad** (or File Explorer) → open **till.log**. Torn letters.
+2. Open `till.log` in Notepad — torn letters.
 3. Kernel Lab → **Two programs, one file (locked)** → **Write with lock**.
-4. Open **till.log** again. Whole lines.
+4. Open `till.log` again — whole lines.
 
-**What to say.** "Two writers, one file. Without a lock the letters tear into
-each other. With a lock every line comes out complete. That is the real
-filesystem, not a mock-up."
+**Say**
 
-**Visual idea.** `filerace-torn.png` and `filerace-clean.png` are the strongest
-pair in the project after the preemption ones, for the same reason: it is the
-same file in the same editor and only one thing changed. Crop both to the same
-region so the eye lands on the text and nothing else.
+> "Two programs writing one file at once. No lock, and the lines tear into each
+> other. With a lock, every line comes out whole. That's the actual file — I'm
+> opening it in the editor."
 
----
+**Code** — `kernel/sync.c:40`, `mutex_lock`.
 
-## Threads (wait overlapping)
-
-**What it is.** Two programs on one CPU. Waiting can overlap. Actual computing
-cannot.
-
-**What you will see.** The sequential bar is longer than the overlapping one.
-
-**Clicks.** **Threads, sequential** → Run. Then **Threads, overlapping** → Run.
-Point at the two times.
-
-**What to say.** "One CPU. The win comes from overlapping a wait with somebody
-else's work, not from doing two sums at once."
-
-**Visual idea.** `threads-run1.png` and `threads-run2.png` cover this. The
-number that matters is the elapsed time, so if you retake them, get both bars
-and both times into a single frame — a reader comparing two separate images has
-to hold a number in their head, and they will not bother.
+> "The reason to run something like this isn't that it beats Linux. It's fifteen
+> thousand lines, you can read all of it, and it checks thirty-four of its own
+> guarantees every time it boots. Memory isn't isolated between privilege levels
+> and it's never run on real hardware — both were scope decisions, both written
+> down."
 
 ---
 
-## Producer / consumer
+## Timing
 
-**What it is.** A queue with four slots. The writer stops when it is full
-instead of trampling what is already there.
-
-**What you will see.** The boxes fill up, then one says **FULL**, and the
-producer waits.
-
-**Clicks.** **Producer / consumer** → **Start live run**. Wait for a box to
-report that the producer is waiting because the queue is full.
-
-**What to say.** "Four slots. It waits. It does not stamp on the old items."
-
-**Visual idea.** No capture of this yet. The shot to get is the exact moment
-the queue reads FULL and the producer is marked as waiting — that single frame
-is the whole idea. It is also the hardest to time, so take several and keep the
-clearest.
+40s + 50s + 50s + 25s = 2:45. Fifteen seconds spare. If you overrun, drop the
+last paragraph of beat 4 and finish on "every line comes out whole."
 
 ---
 
-## Deadlock
+## Four things that will trip you up
 
-**What it is.** Two programs, two locks, grabbed in opposite orders. Each one is
-holding what the other one wants.
+- **Taskbar buttons move.** Focusing a window reorders them. Read the labels,
+  don't click by position.
+- **Notepad ignores keys until you click its page.** Every time you come back to
+  it. This is the most likely reason you'll need a retake.
+- **Sharing OFF kills the mouse too**, for about three seconds. That's the demo
+  working. Don't click around.
+- **The unlocked race is a race.** Now and then it comes out clean. Run it again.
 
-**What you will see.** Those two stop dead. You can still drag this window
-around.
-
-**Clicks.** **Deadlock** → **Trigger deadlock**. Drag the Kernel Lab window to
-prove the machine is fine. Then **Ordered locks**, or **Kill victim**.
-
-**What to say.** "Those two are stuck on each other. Everything else carries on."
-
-**Visual idea.** Also missing a capture. The convincing frame is the two blocked
-rows in Task Manager *while* the Kernel Lab window is mid-drag somewhere it
-obviously was not before — that proves the rest of the system is alive, which is
-the point. A still of two frozen rows on its own just looks like a hang.
+If Notepad's Save ever says "RAM only", the disk didn't attach — don't claim the
+file survives a reboot.
 
 ---
 
-## System call
+## Say "I measured"
 
-**What it is.** User programs are not allowed to touch hardware. They have to
-ask the kernel through a door, which is `int 0x80`.
-
-**What you will see.** `user --syscall` prints its output and exits normally.
-`user` gets killed, and the kernel keeps going.
-
-**Clicks.** Click the **Terminal**. Type `user --syscall`, then `user`.
-
-**What to say.** "Restricted mode cannot poke at hardware. The legal way in is a
-system call. The illegal one gets the program killed and the kernel survives it."
-
-**Visual idea.** `ring3-syscall.png` has this. If you retake it, get both
-commands and both outcomes in one scroll-back — the contrast only works when the
-success and the failure are visible together.
-
----
-
-## Notepad save (disk)
-
-**What it is.** Save writes the file to disk, or only to RAM if this guest has
-no disk attached.
-
-**What you will see.** File Explorer listing `hello.txt`. It survives a reboot —
-but only if Save did not tell you it was RAM only.
-
-**Clicks.** Start → **Notepad**. Type something. Name it `hello.txt`. **Save**.
-Then Start → **File Explorer** and point at `hello.txt`.
-
-**What to say.** "That is a real file. If it says RAM only, do not claim it
-survives a reboot."
-
-**Visual idea.** No capture yet. Put Notepad and File Explorer on screen at the
-same time with the same filename visible in both, so one frame shows the file
-being written and the file being listed. If you do have a disk attached, the
-much better shot is File Explorer after a reboot with the file still in it.
-
----
-
-## If something stalls
-
-| What you see | What to do |
-|--------------|------------|
-| Sharing OFF freezes the mouse for ~3 s | That is the demo. Wait. The hog exits by itself. |
-| Sharing ON and Notepad ignores keys | Click the white page to give Notepad focus, then type. |
-| Unlocked till.log has no torn lines | Run unlocked again. |
-| Notepad says RAM only | No disk attached. Do not claim a reboot. |
-
----
-
-## Pictures
-
-![Hog vs Notepad — Task Manager ticks](images/hog-tm.png)
-
-![till.log torn without a lock](images/filerace-torn.png)
-
-![till.log intact with a lock](images/filerace-clean.png)
+Everything you quote is on screen live except the two drag figures — zero idle
+ticks before, a third of the CPU back after. Those came from a measured run, so
+say so. It's the phrase that separates a number from a guess.
