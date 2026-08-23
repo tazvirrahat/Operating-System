@@ -18,7 +18,7 @@ Have these open in tabs, at the line, ready to cut to:
 
 ---
 
-## Beat 1 — Threads · 40s
+## Part 1 — Threads · 40s
 
 **Do**
 
@@ -42,7 +42,7 @@ Leave the workers running.
 
 ---
 
-## Beat 2 — Preemption · 50s
+## Part 2 — Preemption · 50s
 
 **Do**
 
@@ -70,7 +70,7 @@ Leave the workers running.
 
 ---
 
-## Beat 3 — What I optimised · 50s
+## Part 3 — What I optimised · 50s
 
 **Do**
 
@@ -95,7 +95,7 @@ Leave the workers running.
 
 ---
 
-## Beat 4 — Locking, and the close · 25s
+## Part 4 — Locking, and the close · 25s
 
 **Do**
 
@@ -123,7 +123,7 @@ Leave the workers running.
 ## Timing
 
 40s + 50s + 50s + 25s = 2:45. Fifteen seconds spare. If you overrun, drop the
-last paragraph of beat 4 and finish on "every line comes out whole."
+last paragraph of part 4 and finish on "every line comes out whole."
 
 ---
 
