@@ -49,7 +49,7 @@ typedef enum {
     WIN_TERMINAL,
     WIN_STATS,
     WIN_FILES,
-    WIN_DEMOS,          /* kept, but never listed in the Start menu or taskbar */
+    WIN_DEMOS,          /* Kernel Lab: real kernel experiments, not a simulation */
     WIN_TASKS,
     WIN_NOTEPAD
 } window_kind_t;
@@ -378,11 +378,11 @@ static void draw_stats(const window_t *win)
 /* The Start menu's geometry is needed both to draw it and to work out what a
  * click landed on. Two copies of these expressions is how a menu item ends up
  * one row off from the thing it runs, so there is only one. */
-#define START_ITEMS 7
+#define START_ITEMS 8
 
 static const char *start_items[START_ITEMS] = {
     "Terminal", "File Explorer", "Task Manager", "Notepad",
-    "System", "Change wallpaper", "Exit to console"
+    "Kernel Lab", "System", "Change wallpaper", "Exit to console"
 };
 
 static void start_menu_box(int *x, int *y, int *w, int *h, int *row)
@@ -847,7 +847,7 @@ static void tm_layout(const window_t *win, tm_layout_t *L)
     L->btn_y = L->cy;
 
     /* Tick strip sits under the button row so Task Manager itself can
-     * show idle samples. Demo Centre has the same strip; one function
+     * show idle samples. Kernel Lab has the same strip; one function
      * draws both so the colours cannot drift. */
     L->trace_h = CHROME_H + 10;
     L->trace_y = L->cy + L->btn_h + 6;
@@ -1762,26 +1762,29 @@ static bool np_key(char c)
     return true;
 }
 
-/* ---- demo centre ----------------------------------------------------------
+/* ---- kernel lab ----------------------------------------------------------
  *
- * Every demonstration in here already existed as a shell command, and that
+ * Every experiment in here already existed as a shell command, and that
  * was the problem: showing this system to somebody meant typing at them.
  * This window puts the same primitives behind buttons — the sidebar lists
- * the demonstrations, the pane explains the selected one, Run runs it, and
+ * the experiments, the pane explains the selected one, Run runs it, and
  * the verdict is drawn rather than read out of a scrollback.
  *
  * Nothing is reimplemented. Each entry calls the same demos.h primitive the
- * shell command and the self-test call, so what this window demonstrates and
- * what the machine verifies cannot drift apart.
+ * shell command and the self-test call, so what this window runs and what
+ * the machine verifies cannot drift apart.
  */
 
 typedef enum {
     ENTRY_HEADER,           /* a section label, not clickable */
     ENTRY_SPAWN,
     ENTRY_PREEMPT,
+    ENTRY_PREEMPTJOB,       /* slot 0: hogged, slot 1: sharing */
     ENTRY_BG,
     ENTRY_SCHED,            /* live timeline of the real scheduler */
     ENTRY_RACE,             /* slot 0: no lock, slot 1: mutex */
+    ENTRY_FILERACE,         /* slot 0: no lock, slot 1: mutex, real file */
+    ENTRY_THREADS,          /* slot 0: sequential, slot 1: overlapping */
     ENTRY_PRODCONS,
     ENTRY_DEADLOCK,
     ENTRY_MMU,
@@ -1804,46 +1807,49 @@ typedef struct {
 
 static const demo_entry_t demo_entries[] = {
     { ENTRY_HEADER, "Scheduler", 0, 0, { 0, 0, 0, 0 } },
+    { ENTRY_PREEMPTJOB, "Hog vs Notepad", 0, 0,
+      { "A hog burns the CPU and never waits. Sharing is the timer.",
+        "Off: Notepad freezes ~3s. On: type while hog Ticks climb.", 0, 0 } },
+    { ENTRY_BG, "Background workers", 0, 0,
+      { "Start workers, open Task Manager, watch ticks rise.",
+        "They wait their turn, so they will not freeze Notepad.", 0, 0 } },
     { ENTRY_SPAWN, "Preemption proof", 0, 0,
       { "Three tasks print their letter in tight loops",
-        "and never yield. Any interleaving in the output",
-        "below is the timer forcing a context switch.", 0 } },
+        "and never yield. Interleaving is the timer switching.", 0, 0 } },
     { ENTRY_PREEMPT, "Preemption switch", 0, 0,
-      { "Turn timer preemption off and a running task",
-        "keeps the CPU until it finishes. Run the proof",
-        "again with it off: the letters arrive grouped,",
-        "one task at a time. Turn it back on afterwards." } },
-    { ENTRY_BG, "Background workers", 0, 0,
-      { "Start three workers. They yield and then halt,",
-        "so the desktop stays alive even with preemption",
-        "off - they are load, not the ablation. spawn is",
-        "the proof that never yields." } },
+      { "Turn the timer off and a running task keeps the CPU",
+        "until it finishes. Turn it back on afterwards.", 0, 0 } },
     { ENTRY_SCHED, "Scheduler timeline", 0, 0,
-      { "Who had the CPU on each of the last timer",
-        "ticks, recorded from the tick path itself.",
-        "Start workers or turn preemption off and the",
-        "strip changes live - it is not a cartoon." } },
+      { "Who had the CPU on each of the last timer ticks.",
+        "This strip is recorded from the tick path itself.", 0, 0 } },
+    { ENTRY_THREADS, "Threads, sequential", 0, 0,
+      { "Eight jobs, each a wait then a spin, one after another.",
+        "Then run overlapping: waits can share the CPU.", 0, 0 } },
+    { ENTRY_THREADS, "Threads, overlapping", 0, 1,
+      { "The same eight jobs on two tasks. One CPU: the win is",
+        "overlapping a wait, not two computes at once.", 0, 0 } },
 
-    { ENTRY_HEADER, "Synchronisation", 0, 0, { 0, 0, 0, 0 } },
-    { ENTRY_RACE, "Race, no mutex", 0, 0,
-      { "Two tasks each increment a shared counter 50",
-        "times with no lock. Updates land on top of",
-        "each other, so the total comes out short -",
-        "and differently short on every run.", } },
-    { ENTRY_RACE, "Race, with mutex", 0, 1,
-      { "The same two tasks, now taking a mutex around",
-        "the increment. Every run totals exactly 100:",
-        "the lock closes the window the race needs.", 0 } },
+    { ENTRY_HEADER, "Files", 0, 0, { 0, 0, 0, 0 } },
+    { ENTRY_FILERACE, "Two programs, one file (unlocked)", 0, 0,
+      { "Two programs write till.log at once. No lock: letters tear.",
+        "Open it in Notepad. The strip below is the same bytes.", 0, 0 } },
+    { ENTRY_FILERACE, "Two programs, one file (locked)", 0, 1,
+      { "Same two programs, a lock around each full line.",
+        "Every line in till.log is whole. Open it.", 0, 0 } },
+
+    { ENTRY_HEADER, "Sync", 0, 0, { 0, 0, 0, 0 } },
+    { ENTRY_RACE, "Till, no lock", 0, 0,
+      { "Two cashiers, one till. They both read the same old",
+        "total, then both write. The till comes up short.", 0, 0 } },
+    { ENTRY_RACE, "Till, with lock", 0, 1,
+      { "Same two cashiers, a lock so only one is at the till.",
+        "Every run the total is exactly 100.", 0, 0 } },
     { ENTRY_PRODCONS, "Producer / consumer", 0, 0,
-      { "A 4-slot ring. Each box is a slot: its item, or",
-        "empty. in is the next write, out the next read.",
-        "The two counts are the real semaphores. The GUI",
-        "only samples; the tasks do the waiting." } },
+      { "A 4-slot ring. The writer stops when it is full.",
+        "The boxes and FULL banner are the real buffer.", 0, 0 } },
     { ENTRY_DEADLOCK, "Deadlock", 0, 0,
-      { "Two tasks, two mutexes, opposite lock order.",
-        "They wait for each other; this window does",
-        "not. Kill a victim to break the circle, or",
-        "run the ordered-acquisition fix instead." } },
+      { "Two tasks, two locks, opposite order. Drag this window:",
+        "they are stuck; the rest of the machine is not.", 0, 0 } },
 
     { ENTRY_HEADER, "Memory", 0, 0, { 0, 0, 0, 0 } },
     { ENTRY_MMU, "MMU / paging", 0, 0,
@@ -1915,6 +1921,7 @@ static const demo_entry_t demo_entries[] = {
 
 static struct { bool ran; bool preempt_on; uint32_t switches; } spawn_result;
 static struct { bool ran; int runs; uint32_t total[DEMO_RACE_RUNS]; } race_result[2];
+static struct { bool ran; uint32_t ticks; } threads_result[2];
 static struct { bool ran; bool ok; } pc_result;
 static struct { bool ran; int before, after; } fault_result[5];
 static struct { bool ran; bool completed; } user_result[2];
@@ -2076,6 +2083,23 @@ static int demo_fill_buttons(const demo_entry_t *e, const char **labels)
         labels[0] = demo_worker_count() > 0 ? "Stop workers" : "Start workers";
         labels[1] = task_preempt_enabled() ? "Preempt off" : "Preempt on";
         return 2;
+    case ENTRY_RACE:
+        labels[0] = e->slot == 1 ? "Run with lock" : "Run unlocked";
+        return 1;
+    case ENTRY_PREEMPTJOB: {
+        desktop_hog_info_t inf;
+        desktop_hog_snapshot(&inf);
+        if (inf.running) {
+            labels[0] = "Hog running...";
+            return 1;
+        }
+        labels[0] = "Run with sharing OFF";
+        labels[1] = "Run with sharing ON";
+        return 2;
+    }
+    case ENTRY_FILERACE:
+        labels[0] = e->slot == 1 ? "Write with lock" : "Write unlocked";
+        return 1;
     case ENTRY_PRODCONS:
         labels[0] = pc_live_running() ? "Stop" : "Start live run";
         return 1;
@@ -2285,7 +2309,7 @@ static void demo_execute(const demo_entry_t *e, int btn)
                 kprintf("workers already running.\n");
             } else {
                 kprintf("started %d workers. they yield, so preemption off is safe.\n", n);
-                kprintf("open Scheduler timeline to watch them get ticks.\n");
+                kprintf("open Task Manager: worker Ticks climb.\n");
             }
         }
         break;
@@ -2315,7 +2339,7 @@ static void demo_execute(const demo_entry_t *e, int btn)
         race_result[e->slot].runs = 0;
         race_result[e->slot].ran  = true;
 
-        kprintf("two tasks, %u increments each, mutex %s:\n",
+        kprintf("two cashiers, one till, %u deposits each, lock %s:\n",
                 (uint32_t)RACE_ITERATIONS, lock ? "held" : "not used");
 
         for (int i = 0; i < DEMO_RACE_RUNS; i++) {
@@ -2324,10 +2348,45 @@ static void demo_execute(const demo_entry_t *e, int btn)
             race_result[e->slot].total[i] = r;
             race_result[e->slot].runs     = i + 1;
 
-            kprintf("  run %d: %u of %u%s\n", i + 1, r,
+            kprintf("  shift %d: till %u of %u%s\n", i + 1, r,
                     (uint32_t)RACE_EXPECTED,
-                    r == RACE_EXPECTED ? "" : "  <- lost updates");
+                    r == RACE_EXPECTED ? "" : "  <- lost deposits");
         }
+        break;
+    }
+
+    case ENTRY_PREEMPTJOB: {
+        desktop_hog_info_t inf;
+
+        desktop_hog_snapshot(&inf);
+        if (inf.running) {
+            kprintf("hog already running.\n");
+            break;
+        }
+        /* btn 0 = sharing OFF (freeze), btn 1 = sharing ON (type in Notepad).
+         * Spawn and return — do not wait here or Notepad never gets a turn. */
+        if (btn == 1)
+            kprintf("sharing ON: type in Notepad while the hog runs.\n"
+                    "open Task Manager: hog Ticks climbs.\n");
+        else
+            kprintf("sharing OFF: Notepad and the mouse freeze ~3 seconds.\n"
+                    "the hog then exits by itself. mash keys if you like.\n");
+        desktop_hog_start(btn == 1, DESKTOP_HOG_TICKS);
+        break;
+    }
+
+    case ENTRY_FILERACE:
+        kprintf("two writers, file %s, lock %s\n",
+                FILE_RACE_NAME, e->slot == 1 ? "held" : "not used");
+        file_race_run(e->slot == 1);
+        kprintf("open %s in Notepad or File Explorer.\n", FILE_RACE_NAME);
+        break;
+
+    case ENTRY_THREADS: {
+        uint32_t ticks = threads_run(e->slot != 0);
+
+        threads_result[e->slot].ticks = ticks;
+        threads_result[e->slot].ran   = true;
         break;
     }
 
@@ -2471,6 +2530,26 @@ static void demo_hint(const demos_layout_t *L)
                "Results appear here after a run.", col_title_off, true);
 }
 
+/* Camera-readable status block. Title is the thing the instructor should
+ * be able to read from across the room.
+ *
+ * Written but not yet called from anywhere. Marked unused so that -Werror
+ * does not fail the build on it -- deleting it would throw the work away,
+ * and wiring it in blind would mean guessing which pane it belongs in. */
+__attribute__((unused))
+static int demo_hero(const demos_layout_t *L, int y, uint32_t colour,
+                     const char *title, const char *sub)
+{
+    int h = CHROME_H * 3 + 18;
+
+    fb_fill_round_rect(L->pane_x, y, L->pane_w, h, 8, colour);
+    fb_text_aa(L->pane_x + 16, y + 8, title, col_white, true);
+    if (sub && sub[0])
+        fb_text_aa(L->pane_x + 16, y + 8 + CHROME_H + 6, sub, col_white, true);
+
+    return y + h + 10;
+}
+
 /* An indicator lamp with a caption, for the two entries whose interesting
  * state is current rather than the outcome of a run. */
 static void demo_lamp(const demos_layout_t *L, bool on, const char *caption,
@@ -2497,26 +2576,31 @@ static void draw_race_result(const demos_layout_t *L, int slot)
         return;
     }
 
-    int label_w = fb_text_width("run 8:", true) + 10;
-    int value_w = fb_text_width("888 of 888", true) + 12;
+    int label_w = fb_text_width("shift 8:", true) + 10;
+    int value_w = fb_text_width("lost 888", true) + 12;
     int bar_x   = L->pane_x + label_w;
     int bar_w   = L->pane_w - label_w - value_w - 10;
-    int step    = CHROME_H + 6;
+    int bh      = CHROME_H + 10;
+    int step    = bh + 10;
     int y       = L->result_y;
 
     if (bar_w < 40)
         bar_w = 40;
 
     bool all_ok = true;
+    uint32_t worst_lost = 0;
 
     for (int i = 0; i < race_result[slot].runs; i++) {
         uint32_t total = race_result[slot].total[i];
         bool     ok    = total == (uint32_t)RACE_EXPECTED;
+        uint32_t lost  = ok ? 0 : (uint32_t)RACE_EXPECTED - total;
 
         all_ok &= ok;
+        if (lost > worst_lost)
+            worst_lost = lost;
 
-        char label[8] = "run 1:";
-        label[4] = (char)('1' + i);
+        char label[10] = "shift 1:";
+        label[6] = (char)('1' + i);
 
         fb_text_aa(L->pane_x, y, label, col_black, true);
 
@@ -2524,14 +2608,20 @@ static void draw_race_result(const demos_layout_t *L, int slot)
         if (fill > bar_w)
             fill = bar_w;
 
-        fb_fill_rect(bar_x, y + 2, bar_w, CHROME_H - 4, col_head);
-        fb_fill_rect(bar_x, y + 2, fill, CHROME_H - 4,
+        fb_fill_rect(bar_x, y + 2, bar_w, bh, col_head);
+        fb_fill_rect(bar_x, y + 2, fill, bh,
                      ok ? col_ok : col_close);
 
         char v[24];
-        int  n = u32_to_str(total, v);
-        n = str_append(v, n, " of ");
-        n = n + u32_to_str((uint32_t)RACE_EXPECTED, v + n);
+        int  n;
+
+        if (ok) {
+            n = str_append(v, 0, "till ");
+            n = n + u32_to_str(total, v + n);
+        } else {
+            n = str_append(v, 0, "lost ");
+            n = n + u32_to_str(lost, v + n);
+        }
 
         fb_text_aa(L->pane_x + L->pane_w - fb_text_width(v, true), y, v,
                    ok ? col_ok : col_close, true);
@@ -2543,12 +2633,177 @@ static void draw_race_result(const demos_layout_t *L, int slot)
 
     if (slot == 1)
         demo_banner(L, y, all_ok ? col_ok : col_close, all_ok
-                    ? "Every run exact - the mutex closed the window."
-                    : "UNEXPECTED: the mutex should have made these exact.");
+                    ? "Only one cashier at the till at a time."
+                    : "UNEXPECTED: the lock should have made these exact.");
+    else if (all_ok)
+        demo_banner(L, y, col_title_off,
+                    "Lucky - till matched. Timing. Run again.");
+    else {
+        char cap[72];
+        int n = str_append(cap, 0, "Lost deposits: ");
+        n = n + u32_to_str(worst_lost, cap + n);
+        str_append(cap, n, ". Both cashiers read the same old total.");
+        demo_banner(L, y, col_close, cap);
+    }
+}
+
+static void draw_threads_result(const demos_layout_t *L)
+{
+    uint32_t seq = threads_result[0].ran ? threads_result[0].ticks : 0;
+    uint32_t thr = threads_result[1].ran ? threads_result[1].ticks : 0;
+    uint32_t worst = seq > thr ? seq : thr;
+
+    if (!threads_result[0].ran && !threads_result[1].ran) {
+        demo_hint(L);
+        return;
+    }
+
+    if (worst == 0)
+        worst = 1;
+
+    int label_w = fb_text_width("overlapping", true) + 14;
+    int value_w = fb_text_width("8888 ticks", true) + 12;
+    int bar_x   = L->pane_x + label_w;
+    int bar_w   = L->pane_w - label_w - value_w - 10;
+    int y       = L->result_y;
+    int bh      = CHROME_H + 4;
+
+    if (bar_w < 40)
+        bar_w = 40;
+
+    if (threads_result[0].ran) {
+        int fill = (int)((uint32_t)bar_w * seq / worst);
+
+        fb_text_aa(L->pane_x, y, "sequential", col_black, true);
+        fb_fill_rect(bar_x, y + 2, bar_w, bh, col_head);
+        fb_fill_rect(bar_x, y + 2, fill, bh, col_btn_on);
+
+        char v[24];
+        int  n = u32_to_str(seq, v);
+        n = str_append(v, n, " ticks");
+        fb_text_aa(L->pane_x + L->pane_w - fb_text_width(v, true), y, v,
+                   col_black, true);
+        y += CHROME_H + 10;
+    }
+
+    if (threads_result[1].ran) {
+        bool faster = threads_result[0].ran && thr < seq;
+        int fill = (int)((uint32_t)bar_w * thr / worst);
+
+        fb_text_aa(L->pane_x, y, "overlapping", col_black, true);
+        fb_fill_rect(bar_x, y + 2, bar_w, bh, col_head);
+        fb_fill_rect(bar_x, y + 2, fill, bh, faster ? col_ok : col_btn_on);
+
+        char v[24];
+        int  n = u32_to_str(thr, v);
+        n = str_append(v, n, " ticks");
+        fb_text_aa(L->pane_x + L->pane_w - fb_text_width(v, true), y, v,
+                   faster ? col_ok : col_black, true);
+        y += CHROME_H + 14;
+    }
+
+    if (threads_result[0].ran && threads_result[1].ran && thr < seq)
+        demo_banner(L, y, col_ok,
+                    "Second thread computed during the first one's wait.");
+    else if (threads_result[0].ran && threads_result[1].ran)
+        demo_banner(L, y, col_close,
+                    "Threaded was not shorter - run both again.");
     else
-        demo_banner(L, y, all_ok ? col_title_off : col_close, all_ok
-                    ? "No updates lost this time - timing dependent, run again."
-                    : "Updates lost: the unprotected total came out short.");
+        fb_text_aa(L->pane_x, y,
+                   "Run sequential, then overlapping, on the same jobs.",
+                   col_title_off, true);
+
+    y += CHROME_H + 10;
+    fb_text_aa(L->pane_x, y,
+               "One CPU: two compute-only threads would not finish sooner.",
+               col_title_off, true);
+    y += CHROME_H + 6;
+    fb_text_aa(L->pane_x, y,
+               "This window staying usable is the same overlap.",
+               col_title_off, true);
+}
+
+static void draw_desktop_hog(const demos_layout_t *L)
+{
+    desktop_hog_info_t hog;
+    int y = L->result_y;
+    char line[72];
+    int n;
+
+    desktop_hog_snapshot(&hog);
+
+    if (hog.running) {
+        demo_banner(L, y, hog.sharing ? col_ok : col_close,
+                    hog.sharing
+                    ? "Sharing on: type in Notepad - keys appear while the hog is still in Task Manager."
+                    : "Sharing off: type in Notepad - it will freeze until the hog finishes.");
+        y += CHROME_H + 16;
+        n = str_append(line, 0, "hog Ticks ");
+        n = n + u32_to_str(hog.hog_cpu_ticks, line + n);
+        fb_text_aa(L->pane_x, y, line, col_black, true);
+    } else if (hog.finished) {
+        uint32_t wall = (hog.end_tick > hog.start_tick)
+                        ? hog.end_tick - hog.start_tick : 0;
+
+        demo_banner(L, y, hog.sharing ? col_ok : col_close,
+                    hog.sharing
+                    ? "Hog finished. Notepad should have taken keys."
+                    : "Hog finished. The desktop was frozen; it is back.");
+        y += CHROME_H + 16;
+        n = str_append(line, 0, "ran ");
+        n = n + u32_to_str(wall, line + n);
+        n = str_append(line, n, " ticks then exited.");
+        fb_text_aa(L->pane_x, y, line, col_black, true);
+    } else {
+        demo_hint(L);
+        y += CHROME_H + 8;
+    }
+
+    y += CHROME_H + 14;
+    fb_text_aa(L->pane_x, y,
+               "Task Manager: the hog's Ticks number goes up - that is the thread using the CPU.",
+               col_title_off, true);
+}
+
+static void draw_filerace_result(const demos_layout_t *L, int slot)
+{
+    file_race_info_t info;
+    char line[72];
+    int n, y = L->result_y;
+
+    (void)slot;
+    file_race_snapshot(&info);
+    if (!info.ran) {
+        demo_hint(L);
+        return;
+    }
+
+    n = str_append(line, 0, FILE_RACE_NAME);
+    n = str_append(line, n, ": ");
+    n = n + u32_to_str(info.size, line + n);
+    n = str_append(line, n, " bytes");
+    fb_text_aa(L->pane_x, y, line, col_black, true);
+    y += CHROME_H + 8;
+
+    n = str_append(line, 0, "clean A ");
+    n = n + u32_to_str((uint32_t)info.intact_a, line + n);
+    n = str_append(line, n, "   clean B ");
+    n = n + u32_to_str((uint32_t)info.intact_b, line + n);
+    n = str_append(line, n, "   torn ");
+    n = n + u32_to_str((uint32_t)info.torn, line + n);
+    fb_text_aa(L->pane_x, y, line, col_black, true);
+    y += CHROME_H + 12;
+
+    if (info.locked)
+        demo_banner(L, y, info.torn == 0 ? col_ok : col_close,
+                    info.torn == 0
+                    ? "Open till.log in Notepad - whole lines."
+                    : "UNEXPECTED: the lock should have kept lines intact.");
+    else
+        demo_banner(L, y, info.torn > 0 ? col_close : col_title_off,
+                    info.torn > 0
+                    ? "Open till.log in Notepad - torn letters vs whole lines."
+                    : "No tear this time - run again.");
 }
 
 static void draw_gpu_result(const demos_layout_t *L)
@@ -3565,15 +3820,25 @@ static void draw_demos(const window_t *win, bool active)
 
             demo_lamp(&L, workers > 0, cap,
                       workers > 0
-                      ? (task_preempt_enabled()
-                         ? "They yield and halt; drag a window, it stays smooth."
-                         : "Preemption is OFF, but they still yield. Desktop lives.")
-                      : "Start them and the task list grows by three.");
+                      ? "Open Task Manager and watch their Ticks rise."
+                      : "Start them, then open Task Manager.");
             break;
         }
 
         case ENTRY_RACE:
             draw_race_result(&L, e->slot);
+            break;
+
+        case ENTRY_PREEMPTJOB:
+            draw_desktop_hog(&L);
+            break;
+
+        case ENTRY_FILERACE:
+            draw_filerace_result(&L, e->slot);
+            break;
+
+        case ENTRY_THREADS:
+            draw_threads_result(&L);
             break;
 
         case ENTRY_PRODCONS:
@@ -3694,13 +3959,14 @@ static void taskbar_layout(taskbar_layout_t *T)
 }
 
 /* The window a taskbar button stands for, or -1. File Explorer is pinned and
- * has its own button, so it is not also given one here. */
+ * has its own button, so it is not also given one here. Kernel Lab uses the
+ * same labelled-button path as Task Manager and Notepad. */
 static int taskbar_button_window(const taskbar_layout_t *T, int mx, int my)
 {
     int bx = T->btn_x;
 
     for (int i = 0; i < window_count; i++) {
-        if (windows[i].kind == WIN_FILES || windows[i].kind == WIN_DEMOS)
+        if (windows[i].kind == WIN_FILES)
             continue;
         if (bx + T->btn_w > SCR_W - T->clock_w)
             break;
@@ -3789,7 +4055,7 @@ static void draw_taskbar(void)
     int clock_w = T.clock_w;
 
     for (int i = 0; i < window_count; i++) {
-        if (windows[i].kind == WIN_FILES || windows[i].kind == WIN_DEMOS)
+        if (windows[i].kind == WIN_FILES)
             continue;
         if (bx + btn_w > SCR_W - clock_w)
             break;
@@ -4245,7 +4511,7 @@ static void gui_flush_terminal(void)
     }
 }
 
-/* The demo centre's equivalent, for the same reason: a demonstration blocks
+/* Kernel Lab's equivalent, for the same reason: an experiment blocks
  * the render loop while it runs, and this is what keeps its output visibly
  * arriving in the meantime. */
 static void gui_flush_demos(void)
@@ -4307,9 +4573,10 @@ static bool handle_click(int mx, int my)
             else if (item == 1) show_window(WIN_FILES);
             else if (item == 2) show_window(WIN_TASKS);
             else if (item == 3) show_window(WIN_NOTEPAD);
-            else if (item == 4) show_window(WIN_STATS);
-            else if (item == 5) wallpaper_next();
-            else if (item == 6) return false;
+            else if (item == 4) show_window(WIN_DEMOS);
+            else if (item == 5) show_window(WIN_STATS);
+            else if (item == 6) wallpaper_next();
+            else if (item == 7) return false;
 
             return true;
         }
@@ -4444,6 +4711,52 @@ static bool window_is_live_panel(int i)
     return false;
 }
 
+/* Shortest period among the panels that are actually live. The taskbar
+ * clock is always on, so this is never "sleep forever": the CPU still
+ * halts between deadlines. A 3 s Task Manager period looked frozen at
+ * rest, and a click only painted one frame because last_frame was then
+ * reset. 1 Hz is enough to see ticks, uptime and the CPU ring move;
+ * faster than that and the blit shows up as kernel time in the same
+ * window. */
+static uint32_t gui_refresh_ticks(void)
+{
+    uint32_t refresh = 100;     /* taskbar / System: 1 s at 100 Hz */
+
+    if (pc_live_running())
+        refresh = 5;
+
+    if (task_others_ready() && refresh > 25)
+        refresh = 25;
+
+    {
+        deadlock_info_t dl;
+        deadlock_snapshot(&dl);
+        if (dl.active && !dl.finished && refresh > 5)
+            refresh = 5;
+    }
+
+    {
+        desktop_hog_info_t hog;
+        desktop_hog_snapshot(&hog);
+        if (hog.running && hog.sharing && refresh > 8)
+            refresh = 8;
+    }
+
+    int di = window_of_kind(WIN_DEMOS);
+    if (di >= 0 && windows[di].visible
+        && (demo_entries[demo_sel].kind == ENTRY_SCHED
+         || demo_entries[demo_sel].kind == ENTRY_MMU)
+        && refresh > 8)
+        refresh = 8;
+
+    return refresh;
+}
+
+static bool gui_input_pending(void)
+{
+    return kbd_available() || mouse_has_pending_input();
+}
+
 /* Park until input or the panel-refresh deadline. Workers that are READY
  * still run: pick_next prefers them over idle, and this caller is BLOCKED
  * rather than sitting in the run queue. Yielding here used to keep the GUI
@@ -4451,6 +4764,9 @@ static bool window_is_live_panel(int i)
  * for doing nothing. Input IRQs and the deadline still wake us. */
 static void gui_wait(uint32_t deadline)
 {
+    if (gui_input_pending())
+        return;
+
     uint32_t now = pit_ticks();
 
     /* A frame that overran its period would otherwise return immediately,
@@ -4575,9 +4891,8 @@ void gui_run(void)
     if (fh < 6 * (CHROME_H + 8))
         fh = 6 * (CHROME_H + 8);
 
-    /* Demo Centre is created so its code stays referenced, but it is not
-     * on the Start menu or the taskbar. Task Manager and Notepad open from
-     * those instead. */
+    /* Kernel Lab starts closed, like Task Manager and Notepad: open it from
+     * the Start menu or the taskbar. */
     int dw = (SCR_W * 62) / 100;
     int dh = ((SCR_H - TASKBAR_H) * 82) / 100;
     int tmw = (SCR_W * 52) / 100;
@@ -4587,7 +4902,7 @@ void gui_run(void)
 
     window_count = 6;
     windows[0] = (window_t){ (SCR_W - dw) / 2, 36, dw, dh,
-                             "Demo Centre", WIN_DEMOS, false };
+                             "Kernel Lab", WIN_DEMOS, false };
     windows[1] = (window_t){ SCR_W - sw - 12, 30, sw, sh,
                              "System", WIN_STATS, true };
     windows[2] = (window_t){ SCR_W - rw - 12, fy, rw, fh,
@@ -4623,7 +4938,7 @@ void gui_run(void)
     for (int i = 0; i < window_count; i++)
         clamp_window(&windows[i]);
 
-    /* Size the demo centre's output grid once. The window cannot be resized,
+    /* Size Kernel Lab's output grid once. The window cannot be resized,
      * and the wrap column has to exist before the first character arrives.
      * The depth is what remains of the pane under the tallest description
      * and its button, less room for the result graphics above the log. */
@@ -4670,6 +4985,8 @@ void gui_run(void)
     uint32_t last_frame = pit_ticks();
 
     for (;;) {
+        desktop_hog_poll();
+
         while (kbd_available()) {
             char c = kbd_poll();
 
@@ -4791,24 +5108,7 @@ void gui_run(void)
             dirty = true;
         }
 
-        uint32_t refresh = 100;
-        int fi = window_of_kind(WIN_TASKS);
-        if (pc_live_running())
-            refresh = 5;
-        else if (task_others_ready())
-            refresh = 25;
-        else if (fi >= 0 && windows[fi].visible)
-            refresh = 300;  /* ~3 s: a TM blit is ~0.3 s in QEMU, so 1 Hz
-                             * would still show the kernel at ~30% at rest */
-        else {
-            deadlock_info_t dl;
-            deadlock_snapshot(&dl);
-            if (dl.active && !dl.finished)
-                refresh = 5;
-            else if (demo_entries[demo_sel].kind == ENTRY_SCHED
-                  || demo_entries[demo_sel].kind == ENTRY_MMU)
-                refresh = 8;
-        }
+        uint32_t refresh = gui_refresh_ticks();
 
         if (pit_ticks() - last_frame >= refresh) {
             dirty = true;
@@ -4824,13 +5124,12 @@ void gui_run(void)
             continue;
         }
 
-        last_frame = pit_ticks();
-
         /* The cursor sits on top of the scene, so it has to come off before
          * anything underneath is touched, and go back on afterwards. */
         int cx = cursor_saved_x, cy = cursor_saved_y;
         int cw = cursor_saved_w, ch = cursor_saved_h;
         bool had_cursor = cursor_visible;
+        bool painted_panels = scene_dirty || panels_dirty;
 
         cursor_erase();
 
@@ -4915,8 +5214,16 @@ void gui_run(void)
          *
          * `dirty` has to be consumed here. Leaving it set made every pass a
          * present even when nothing had changed, which is the 100% CPU the
-         * idle task exists to end. */
+         * idle task exists to end.
+         *
+         * last_frame counts panel/scene paints only. A cursor-only frame
+         * used to stamp it, so a twitchy mouse (or the click that woke
+         * us) postponed the periodic refresh indefinitely: Task Manager
+         * painted once, then froze until the next click. */
+        bool painted = painted_panels;
         dirty = false;
+        if (painted)
+            last_frame = pit_ticks();
         gui_wait(last_frame + refresh);
     }
 }
