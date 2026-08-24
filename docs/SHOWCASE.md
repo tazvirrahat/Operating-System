@@ -1,5 +1,10 @@
 # TazOS — three-minute walkthrough
 
+Everything in a **> quote block** is meant to be said out loud, word for word.
+Everything else is what you do with the mouse.
+
+---
+
 ## Before you record
 
 Build with `dev`. Boot `vmware/MyOS.vmx`, wait for `>`, type `gui`. Then open
@@ -11,119 +16,151 @@ the desktop is set up.
 
 Have these open in tabs, at the line, ready to cut to:
 
-- `kernel/context.asm:23`
-- `kernel/task.c:348`
-- `kernel/gui.c:4322`
-- `kernel/sync.c:40`
+- `kernel/task.c:348` — `task_tick`
+- `kernel/context.asm:23` — `context_switch`
+- `kernel/gui.c:4336` — `draw_drag_step`
 
 ---
 
-## Part 1 — Threads · 40s
+## Intro · 20s
 
-**Do**
+Nothing to click. Just the desktop on screen.
 
-1. Point at **System idle** in Task Manager, Ticks climbing.
-2. Kernel Lab → **Background workers** → **Start 3 workers**.
-3. Point at the three `worker_` rows — different Ticks on each.
-
-**Say**
-
-> "That's Task Manager reading my scheduler, live. Right now the busiest thing
-> here is the idle task — no work, so the processor is halted."
+> "This is TazOS — an operating system I wrote from scratch for x86."
 >
-> "Three threads. They show up straight away and each one's tick count climbs.
-> Different numbers, so time is genuinely being divided between them."
+> "There's nothing underneath it. No Linux, no Windows. It boots from GRUB, sets
+> up its own interrupt tables, manages its own memory, and draws this desktop
+> itself."
+>
+> "About fifteen thousand lines, and everything I'm about to show you is running
+> live."
 
-**Code** — `kernel/task.c:348`, `task_tick`.
+---
 
-> "That's it. It runs off the timer interrupt and it's the whole of preemption."
+## Part 1 — Threads · 35s
+
+**Do:** point at **System idle**, then Kernel Lab → **Background workers** →
+**Start 3 workers**.
+
+> "This is Task Manager, reading my scheduler live."
+>
+> "Right now the busiest thing here is the idle task. No work to do, so the
+> processor is halted."
+>
+> "Now I'll start three background threads."
+
+**Do:** point at the three `worker_` rows and the loops counter.
+
+> "There they are. The tick counts are climbing, and they're all different
+> numbers. That's real CPU time being split between them."
+
+**Do:** cut to `kernel/task.c:348`.
+
+> "And that's preemption. It runs off the timer interrupt — every tick it
+> charges whoever was running, and decides whether to switch."
 
 Leave the workers running.
 
 ---
 
-## Part 2 — Preemption · 50s
+## Part 2 — Preemption · 45s
 
-**Do**
+**Do:** Kernel Lab → **Hog vs Notepad** → **Run with sharing OFF**. Try to type.
 
-1. Kernel Lab → **Hog vs Notepad** → **Run with sharing OFF**. Try to type in
-   Notepad. Nothing. Wait about three seconds.
-2. Click Notepad's page. **Run with sharing ON**. Click the page again. Type.
-3. Point at `hog` in Task Manager, ticks climbing.
-
-**Say**
-
-> "Now a program that never gives the CPU back. Sharing off, and it's taken the
-> whole machine — mouse is gone, Notepad won't take a key."
+> "Here's a program that grabs the CPU and never gives it back. First with
+> sharing off."
 >
-> "Same program, sharing on. Still running, still burning CPU, you can see it
-> there. But I can type. The timer takes the processor off it a hundred times a
-> second."
+> "Nothing. The mouse is gone too. One bad program has taken the whole machine."
+
+**Do:** wait about three seconds for it to release.
+
+> "And it comes back on its own."
+
+**Do:** click Notepad's page. **Run with sharing ON**. Click the page and type.
+
+> "Same program, sharing on."
 >
-> "That's the difference between a machine one bad program can hang and one it
-> can't."
+> "I can type. And it's still running — you can see it there, still burning CPU.
+> But the timer takes the processor off it a hundred times a second."
+>
+> "That's the difference between a machine one bad program can freeze, and one
+> it can't."
 
-**Code** — `kernel/context.asm:23`.
+**Do:** cut to `kernel/context.asm:23`.
 
-> "Fifteen instructions. Save the registers, swap the stack pointer, and the
-> `ret` at the end lands in a different thread."
+> "That's the context switch. Fifteen instructions — save the registers, swap
+> the stack pointer, and that `ret` lands in a different thread."
 
 ---
 
-## Part 3 — What I optimised · 50s
+## Part 3 — What I optimised · 40s
 
-**Do**
+**Do:** drag a window around for a few seconds.
 
-1. Drag a window around for a few seconds.
-2. Point at **System idle** — still getting CPU while you drag.
-3. Point at the **Memory** and **GPU** rows.
-
-**Say**
-
-> "This used to take the entire processor. I measured it — over a ten-second
-> drag the idle task got zero ticks and the scheduler never switched once."
+> "Dragging a window used to take the entire processor. I measured it — over a
+> ten-second drag, the idle task got zero ticks."
 >
-> "Every mouse packet was redrawing the whole desktop. Eight megabytes a frame
-> to move one rectangle. But the window's contents don't change while you drag
-> it, only where it is. So now it's drawn once and each frame just moves those
-> pixels and repaints the strip it uncovered."
+> "Every mouse packet was redrawing the whole desktop. Eight megabytes a frame,
+> to move one rectangle."
 >
-> "Measured again after: a third of the CPU back, and you can see idle still
-> getting scheduled while I'm dragging."
+> "But the contents don't change while you drag it. Only the position does. So
+> now it's drawn once, and each frame just moves those pixels and repaints the
+> strip it uncovered."
 
-**Code** — `kernel/gui.c:4322`, `draw_drag_step`.
+**Do:** point at **System idle**, still getting CPU while you drag.
+
+> "I measured it again after — a third of the CPU came back. You can see idle
+> still getting scheduled while I drag."
+
+**Do:** cut to `kernel/gui.c:4336`.
+
+> "That's the function."
 
 ---
 
-## Part 4 — Locking, and the close · 25s
+## Part 4 — Locking, and the close · 30s
 
-**Do**
+**Do:** Kernel Lab → **Two programs, one file (unlocked)** → **Write unlocked**,
+then open `till.log` in Notepad.
 
-1. Kernel Lab → **Two programs, one file (unlocked)** → **Write unlocked**.
-2. Open `till.log` in Notepad — torn letters.
-3. Kernel Lab → **Two programs, one file (locked)** → **Write with lock**.
-4. Open `till.log` again — whole lines.
+> "Last thing. Two programs writing the same file at once. First without a
+> lock."
+>
+> "The letters tear into each other — A and B interleaved, mid-line."
 
-**Say**
+**Do:** **Two programs, one file (locked)** → **Write with lock**, then open
+`till.log` again.
 
-> "Two programs writing one file at once. No lock, and the lines tear into each
-> other. With a lock, every line comes out whole. That's the actual file — I'm
-> opening it in the editor."
+> "Now with a lock. Every line comes out whole. And that's the real file — I'm
+> just opening it in the editor."
 
-**Code** — `kernel/sync.c:40`, `mutex_lock`.
+**The close:**
 
-> "The reason to run something like this isn't that it beats Linux. It's fifteen
-> thousand lines, you can read all of it, and it checks thirty-four of its own
-> guarantees every time it boots. Memory isn't isolated between privilege levels
-> and it's never run on real hardware — both were scope decisions, both written
-> down."
+> "I won't tell you this beats Linux. It doesn't."
+>
+> "What it is, is fifteen thousand lines you can actually sit down and read, and
+> it checks thirty-four of its own guarantees every time it boots."
+>
+> "Memory isn't isolated between privilege levels, and it's never run on real
+> hardware. Both were deliberate, and both are written up."
 
 ---
 
 ## Timing
 
-40s + 50s + 50s + 25s = 2:45. Fifteen seconds spare. If you overrun, drop the
-last paragraph of part 4 and finish on "every line comes out whole."
+429 spoken words. At 150 words a minute that's 2:52 of talking; at a brisker
+160 it's 2:41. Add roughly fifteen seconds of silence while you drag, wait for
+the hog to let go, and open files.
+
+So: comfortably under three minutes if you talk at a normal clip, and just over
+if you're slow. That is tighter than it looks on paper.
+
+If you overrun, drop the `gui.c` cut in part 3 and finish part 4 on "every line
+comes out whole."
+
+Read it aloud once with a stopwatch before the take. If you naturally talk fast,
+you will have room to spare; if you talk slowly, cut the second sentence of the
+close.
 
 ---
 
