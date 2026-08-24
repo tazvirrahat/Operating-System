@@ -2,9 +2,9 @@
 
 **Project:** TazOS, a bare-metal x86 operating system kernel  
 **Course:** Operating Systems  
-**Submitted:** *(date)*  
-**Authors:** *(names)*  
-**Repository:** *(URL)*  
+**Submitted:** 27 August 2026  
+**Author:** Md Tazvir Rahat  
+**Repository:** <https://github.com/tazvirrahat/Operating-System>  
 
 ---
 
