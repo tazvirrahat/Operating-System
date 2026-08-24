@@ -17,8 +17,11 @@ the desktop is set up.
 Have these open in tabs, at the line, ready to cut to:
 
 - `kernel/task.c:348` — `task_tick`
-- `kernel/context.asm:23` — `context_switch`
-- `kernel/gui.c:4336` — `draw_drag_step`
+
+That is the only file you cut to. Two more are listed in
+[`CODE_MAP.md`](CODE_MAP.md) if a question needs them:
+`kernel/context.asm:23` for the context switch itself, and
+`kernel/gui.c:4336` for the drag optimisation.
 
 ---
 
@@ -37,60 +40,77 @@ Nothing to click. Just the desktop on screen.
 
 ---
 
-## Part 1 — Threads · 35s
+## Part 1 — Proving the threads are real · 45s
+
+Two separate claims here, and they need different evidence.
+
+**That they are threads** — separate execution contexts, not one loop pretending
+— is proved by the stack column and by killing one.
+
+**That they are scheduled** — genuinely preempted rather than run one after
+another — is proved by the interleaving vanishing when the timer is off.
 
 **Do:** point at **System idle**, then Kernel Lab → **Background workers** →
-**Start 3 workers**.
+**Start 3 workers**. Point at the **STACK** column.
 
-> "This is Task Manager, reading my scheduler live."
+> "This is Task Manager reading my scheduler live. The busiest thing is the idle
+> task — no work, so the processor is halted."
 >
-> "Right now the busiest thing here is the idle task. No work to do, so the
-> processor is halted."
+> "Three threads. And look at the stack column — eight kilobytes each. They're
+> separate allocations off the heap, and every one has a guard word at the
+> bottom that the kernel checks on every boot. That's what makes them threads
+> and not just three function calls."
+
+**Do:** select one worker, click **End task**.
+
+> "And I can kill one of them. The other two carry on — separate lifetimes,
+> separate stacks."
+
+**Do:** Kernel Lab → **Preemption proof** → run it.
+
+> "Now, are they actually being scheduled? Three more tasks, each printing its
+> own letter in a tight loop, none of them ever yielding."
 >
-> "Now I'll start three background threads."
+> "A, B and C, all mixed together. Something stopped each one mid-loop and let
+> the next one run — and it resumed exactly where it left off. That's the stack
+> doing its job."
 
-**Do:** point at the three `worker_` rows and the loops counter.
+**Do:** **Preemption switch** → OFF. Run **Preemption proof** again.
 
-> "There they are. All three tick counts are climbing, at about the same rate —
-> that's the scheduler giving each of them a fair share."
+> "Same three tasks, timer off."
+>
+> "All the A's, then the B's, then the C's. Four context switches that time,
+> instead of forty-one."
 
-**Do:** cut to `kernel/task.c:348`.
+**Do:** turn preemption back **ON**, then cut to `kernel/task.c:348`.
 
-> "And that's preemption. It runs off the timer interrupt — every tick it
-> charges whoever was running, and decides whether to switch."
-
-Leave the workers running.
+> "And back on. That's preemption — it runs off the timer interrupt, and every
+> tick it decides whether to switch."
 
 ---
 
-## Part 2 — Preemption · 45s
+## Part 2 — Why that matters · 30s
 
-**Do:** Kernel Lab → **Hog vs Notepad** → **Run with sharing OFF**. Try to type.
+Part 1 proved the scheduler works. This is what it buys you.
 
-> "Here's a program that grabs the CPU and never gives it back. First with
-> sharing off."
+**Do:** Kernel Lab → **Hog vs Notepad** → **Run with sharing OFF**. Try to type
+in Notepad.
+
+> "Same idea, but now it's a program that grabs the CPU and never lets go — and
+> the scheduler is off."
 >
 > "Nothing. The mouse is gone too. One bad program has taken the whole machine."
 
-**Do:** wait for it to release. It runs for ten seconds, so use the time — try
-the mouse, try typing again.
-
-> "And it comes back on its own."
+**Do:** wait for it to release. It runs for ten seconds — use the time, try the
+mouse, try typing again.
 
 **Do:** click Notepad's page. **Run with sharing ON**. Click the page and type.
 
-> "Same program, sharing on."
->
-> "I can type. And it's still running — you can see it there, still burning CPU.
-> But the timer takes the processor off it a hundred times a second."
+> "Same program, scheduler on. I can type — and it's still running, still
+> burning CPU, right there in Task Manager."
 >
 > "That's the difference between a machine one bad program can freeze, and one
 > it can't."
-
-**Do:** cut to `kernel/context.asm:23`.
-
-> "That's the context switch. Fifteen instructions — save the registers, swap
-> the stack pointer, and that `ret` lands in a different thread."
 
 ---
 
@@ -112,10 +132,6 @@ the mouse, try typing again.
 
 > "I measured it again after — a third of the CPU came back. You can see idle
 > still getting scheduled while I drag."
-
-**Do:** cut to `kernel/gui.c:4336`.
-
-> "That's the function."
 
 ---
 
@@ -149,19 +165,22 @@ then open `till.log` in Notepad.
 
 ## Timing
 
-429 spoken words. At 150 words a minute that's 2:52 of talking; at a brisker
-160 it's 2:41. Add roughly fifteen seconds of silence while you drag, wait for
-the hog to let go, and open files.
+493 spoken words. At 150 words a minute that is 3:17 of talking, plus roughly
+twenty seconds of silence while the demos run, the hog holds the machine, and
+you drag. That is **over three minutes** — deliberately, because part 1 grew to
+carry two separate proofs.
 
-So: comfortably under three minutes if you talk at a normal clip, and just over
-if you're slow. That is tighter than it looks on paper.
+Pick one of these before you record:
 
-If you overrun, drop the `gui.c` cut in part 3 and finish part 4 on "every line
-comes out whole."
+- **Talk at 170 and keep everything.** 493 words is 2:54, plus the silences puts
+  you a shade over. Tight but doable if you are a fast talker.
+- **Drop the "End task" step in part 1** (25 words, about 10 seconds with the
+  clicking). The stack column still carries the thread claim on its own.
+- **Drop part 3** and mention the drag optimisation in one sentence instead. It
+  is the least load-bearing of the four.
 
-Read it aloud once with a stopwatch before the take. If you naturally talk fast,
-you will have room to spare; if you talk slowly, cut the second sentence of the
-close.
+Read it aloud with a stopwatch once. Whichever you cut, cut it before the take,
+not during.
 
 ---
 
