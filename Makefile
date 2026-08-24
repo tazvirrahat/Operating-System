@@ -49,14 +49,25 @@ AOBJ += $(patsubst kernel/%.asm,$(BUILD)/%.asm.o,$(filter-out kernel/boot.asm,$(
 OBJ := $(AOBJ) $(COBJ)
 
 QEMU      := qemu-system-i386
-QEMUFLAGS := -cdrom $(ISO) -display none -no-reboot
+QEMUFLAGS := -cdrom $(ISO) -boot order=d -display none -no-reboot
 
-.PHONY: all iso run test debug clean
+# 8 MB raw image on IDE primary master (legacy 0x1F0). Created on demand so
+# a missing file never fails CI. `-boot order=d` keeps GRUB on the ISO;
+# otherwise QEMU would try the empty disk first.
+DISK      := $(BUILD)/tazos.img
+DISK_MB   := 8
+QEMU_DISK := -drive file=$(DISK),format=raw,if=ide,index=0,media=disk
+
+.PHONY: all iso run test test-nodisk persist-test vmdk debug clean
 
 all: $(ISO)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
+
+$(DISK): | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=$(DISK_MB) status=none
+	@echo "created $@"
 
 $(BUILD)/%.asm.o: kernel/%.asm | $(BUILD)
 	$(AS) $(ASFLAGS) $< -o $@
@@ -81,27 +92,53 @@ $(ISO): $(KERNEL) iso/boot/grub/grub.cfg
 iso: $(ISO)
 
 # Serial goes to stdout so we can see kernel output without a display.
-run: $(ISO)
-	$(QEMU) $(QEMUFLAGS) -serial stdio
+run: $(ISO) $(DISK)
+	$(QEMU) $(QEMUFLAGS) $(QEMU_DISK) -serial stdio
 
-# Headless verification. Boots, lets the kernel run its self-tests, and fails
-# the build if the expected pass line never appears.
-test: $(ISO)
-	@echo "=== booting headless ==="
-	@timeout 30 $(QEMU) $(QEMUFLAGS) -serial stdio > $(BUILD)/test.log 2>&1 || true
+# Headless verification. Boots with the disk attached (created if missing)
+# and again without one, because both configurations have to report zero
+# failures: a missing image must not hang, and a present one must not
+# corrupt the self-test.
+test: $(ISO) $(DISK)
+	@echo "=== booting headless (IDE disk attached) ==="
+	@timeout 45 $(QEMU) $(QEMUFLAGS) $(QEMU_DISK) -serial stdio > $(BUILD)/test.log 2>&1 || true
 	@cat $(BUILD)/test.log
 	@if grep -q "0 failed" $(BUILD)/test.log; then \
-		echo "=== TESTS PASSED ==="; \
-	elif grep -q "boot pipeline verified" $(BUILD)/test.log; then \
-		echo "=== BOOT OK (no selftest yet) ==="; \
+		echo "=== TESTS PASSED (with disk) ==="; \
 	else \
-		echo "=== FAILED: kernel did not reach a known good state ==="; exit 1; \
+		echo "=== FAILED: kernel did not reach a known good state (with disk) ==="; exit 1; \
 	fi
+	@echo "=== booting headless (no disk) ==="
+	@timeout 45 $(QEMU) $(QEMUFLAGS) -serial stdio > $(BUILD)/test-nodisk.log 2>&1 || true
+	@cat $(BUILD)/test-nodisk.log
+	@if grep -q "0 failed" $(BUILD)/test-nodisk.log; then \
+		echo "=== TESTS PASSED (no disk) ==="; \
+	else \
+		echo "=== FAILED: kernel did not reach a known good state (no disk) ==="; exit 1; \
+	fi
+
+test-nodisk: $(ISO)
+	@echo "=== booting headless (no disk) ==="
+	@timeout 45 $(QEMU) $(QEMUFLAGS) -serial stdio > $(BUILD)/test-nodisk.log 2>&1 || true
+	@cat $(BUILD)/test-nodisk.log
+	@if grep -q "0 failed" $(BUILD)/test-nodisk.log; then \
+		echo "=== TESTS PASSED (no disk) ==="; \
+	else \
+		echo "=== FAILED: kernel did not reach a known good state (no disk) ==="; exit 1; \
+	fi
+
+# Two-boot persistence: write a marker file, reboot, read it back.
+persist-test: $(ISO)
+	python3 tools/persist_test.py
+
+# VMware IDE disk (descriptor + flat extent) next to MyOS.vmx.
+vmdk:
+	python3 tools/genvmdk.py
 
 # Halts before the first instruction and waits for gdb.
 #   gdb build/myos.bin -ex 'target remote :1234'
-debug: $(ISO)
-	$(QEMU) $(QEMUFLAGS) -serial stdio -s -S
+debug: $(ISO) $(DISK)
+	$(QEMU) $(QEMUFLAGS) $(QEMU_DISK) -serial stdio -s -S
 
 clean:
 	rm -rf $(BUILD)

@@ -1,12 +1,14 @@
 #!/usr/bin/vmware
-# VMware configuration for booting MyOS from the built ISO.
+# VMware configuration for booting TazOS from the built ISO.
 #
 # Usage
 #   1. Build the ISO first:            .\dev.ps1
 #      This produces build\myos.iso
-#   2. Open this file with VMware Workstation Player ("Open a Virtual Machine")
-#   3. Power on. It boots straight from the ISO -- there is no virtual disk,
-#      so nothing can be written and nothing can be damaged.
+#   2. Create the IDE disk image:      .\dev.cmd vmdk
+#      This produces vmware\tazos-disk.vmdk (descriptor + 8 MB flat extent)
+#   3. Open this file with VMware Workstation Player ("Open a Virtual Machine")
+#   4. Power on. It boots from the ISO. The IDE disk at ide0:0 is where
+#      Notepad / write / append keep files across reboots.
 #
 # The relative path below assumes this file stays in the vmware\ folder of the
 # repository, with the ISO at ..\build\myos.iso.
@@ -15,17 +17,25 @@
 config.version = "8"
 virtualHW.version = "19"
 
-displayName = "MyOS - bare metal x86 kernel"
+displayName = "TazOS - Bare metal x86 kernel"
 guestOS = "other"
 
 # 128 MB is plenty: the kernel maps what the multiboot memory map reports and
 # uses a 1 MB heap.
 memsize = "4096"
-numvcpus = "1"
+numvcpus = "8"
 
 # --- boot media -----------------------------------------------------------
-# Boot from the ISO. No hard disk is attached at all, which is what makes this
-# safe to run: the guest has no writable storage to touch.
+# Boot from the ISO (secondary master). The writable disk is on primary
+# master (ide0:0) because the ATA driver only talks to the legacy ports at
+# 0x1F0. A SCSI disk would be invisible to it. Generate the VMDK first:
+#   python3 tools/genvmdk.py
+# or from Windows: .\dev.cmd vmdk
+ide0:0.present = "TRUE"
+ide0:0.fileName = "tazos-disk.vmdk"
+ide0:0.deviceType = "disk"
+ide0:0.mode = "persistent"
+
 ide1:0.present = "TRUE"
 ide1:0.deviceType = "cdrom-image"
 ide1:0.fileName = "..\build\myos.iso"
@@ -55,7 +65,7 @@ ehci.present = "FALSE"
 
 # --- things this kernel does not have drivers for -------------------------
 # Left out deliberately rather than by omission: no network stack, no sound,
-# no disk driver, no graphics beyond VGA text mode.
+# no graphics beyond the framebuffer the SVGA driver already handles.
 ethernet0.present = "FALSE"
 sound.present = "FALSE"
 floppy0.present = "FALSE"
@@ -67,16 +77,16 @@ msg.autoAnswer = "TRUE"
 extendedConfigFile = "MyOS.vmxf"
 virtualHW.productCompatibility = "hosted"
 vmxstats.filename = "MyOS.scoreboard"
-numa.autosize.cookie = "10012"
-numa.autosize.vcpu.maxPerVirtualNode = "1"
+numa.autosize.cookie = "80022"
+numa.autosize.vcpu.maxPerVirtualNode = "8"
 uuid.bios = "56 4d f2 aa 33 9c 68 a5-f4 ef 93 0c 01 e0 dc 89"
 uuid.location = "56 4d f2 aa 33 9c 68 a5-f4 ef 93 0c 01 e0 dc 89"
 vmotion.checkpointFBSize = "134217728"
 vmotion.checkpointSVGAPrimarySize = "268435456"
 vmotion.svga.mobMaxSize = "1073741824"
-vmotion.svga.graphicsMemoryKB = "8388608"
+vmotion.svga.graphicsMemoryKB = "1048576"
 monitor.phys_bits_used = "45"
-vm.lastPowerRequestTimestamp = "1787163421731000"
+vm.lastPowerRequestTimestamp = "1787561805096000"
 cleanShutdown = "TRUE"
 softPowerOff = "FALSE"
 mks.enable3d = "TRUE"
@@ -99,6 +109,7 @@ vmotion.svga.sm5 = "1"
 vmotion.svga.multisample8x = "1"
 vmotion.svga.logicBlendOps = "1"
 gui.stretchGuestMode = "fullfill"
-checkpoint.vmState = ""
 gui.enableStretchGuest = "TRUE"
 svga.graphicsMemoryKB = "1048576"
+ide0:0.redo = ""
+cpuid.coresPerSocket = "2"
