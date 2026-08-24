@@ -104,7 +104,7 @@ console (VGA + serial)   output first: nothing after this is debuggable without 
 | Graphics adapter | `svga.c`, `svga3d.c` | VMware SVGA-II registers and command FIFO; 3D pipeline when exposed |
 | Framebuffer | `fb.c` | 32-bit drawing, alpha blending, rounded rectangles, shadows, dirty rectangles |
 | Anti-aliased text | `font_atlas.c`, `fbcon.c` | Greyscale coverage atlases baked at build time from a TrueType face |
-| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback, file manager with preview |
+| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback, file manager with preview, Kernel Lab with clickable kernel experiments and live panels |
 | Wallpaper | `wallpaper.c` | An embedded palettised picture, plus five generated gradients |
 | Filesystem | `fs.c` | Flat namespace, growable heap-backed files, RTC timestamps |
 | Shell | `shell.c` | 25 commands, tokeniser, dispatch table, 16-entry command history |
@@ -457,7 +457,99 @@ Two things are worth taking from it. The first is that the original fix was righ
 
 **Result.** The characters appear as the tasks produce them. Measured across the demo, consecutive frames now differ; before the change they were pixel-identical.
 
-### 3.25 *(Add anything else you hit)*
+### 3.25 Dragging a window took the entire processor
+
+**Situation.** Dragging any window pinned the CPU. It was not subtle: over a ten-second drag the idle task received zero ticks and the context-switch counter did not move at all, which means the render loop had the machine to itself for the whole drag.
+
+**Task.** A drag set the flag that means "the scene changed", and the render loop treated that the same way it treats any other change. Every mouse packet therefore paid for a full rebuild: the entire wallpaper at two million palette lookups, a re-render of every window including all of the anti-aliased text inside them, and an eight-megabyte copy to the screen.
+
+**Action.** None of that work was necessary, because the contents of a window do not change while it is being dragged. Only its position does. So the window is now rasterised once, when the drag starts, into a buffer taken from the heap. Each step of the drag restores the strip the window uncovered, blits the cached pixels at the new position, and copies the two affected rectangles forward. That is what a compositor does, and it needed the wallpaper to learn how to draw a sub-rectangle rather than only the whole desktop.
+
+**Result.** The idle task went from zero per cent of the ticks to thirty-three, measured the same way before and after. The scheduler runs again during a drag, so input and background work are no longer starved.
+
+Two bugs on the way there were worth as much as the fix. The first version pushed hand-picked rectangles to the screen and left a trail of ghost pointers, because erasing the cursor cleans the back buffer where the pointer used to be and that rectangle was in none of the ones being copied — letting the existing dirty-region tracker answer the question was both shorter and correct by construction. The second captured the window's pixels from its current position, which is the *destination*: input is handled earlier in the same loop iteration, so the back buffer there still held whatever was behind the window. It cached wallpaper and a strip of the next window along and blitted that as though it were the window being dragged.
+
+---
+
+### 3.26 The graphics adapter made the drag slower, not faster
+
+**Situation.** Moving a window is a block copy, which is exactly what a 2D graphics engine is for. The adapter advertises the capability and the driver had a `RECT_COPY` command written for it. Nothing had ever called it.
+
+**Task.** All window movement was done by the CPU, copying pixels into video memory by hand.
+
+**Action.** We wired the drag path to hand the move to the adapter when it offers the capability, keeping the back buffer in step because every later partial repaint reads from it. Then we measured it against the same build with the flag off, on the same emulated adapter, over the same ten-second drag.
+
+**Result.** It lost, repeatably: thirty-three per cent idle with the acceleration off, twenty-seven to thirty with it on.
+
+Neither half of the trade pays under emulation. The emulator executes `RECT_COPY` on the host processor, so there is no blit engine being saved; and the ordering it forces costs more than the copy did, because the command queue runs asynchronously and the CPU may not write the uncovered strips into video memory until the adapter has finished reading the rectangle it is moving. Finding that out means polling a register over an I/O port, which is a virtual-machine exit on every read, once a frame.
+
+The code stayed, defaulted off, with the measurement written into the comment beside the flag. On a VMware guest the same command is backed by the host's own graphics hardware, where the blit genuinely is free and the trade may well go the other way — but that is a measurement to take on the machine it matters for, not an assumption to inherit from this one. A negative result that is kept and documented is worth more than an optimisation nobody checked.
+
+---
+
+### 3.27 Three background workers appeared to eat the whole machine
+
+**Situation.** Starting three background worker threads showed them accumulating CPU time fast enough to look as though they owned the processor, while the idle task starved.
+
+**Task.** Each worker incremented a counter, yielded, and then executed `hlt` to wait for the next timer interrupt.
+
+**Action.** The measurement was wrong before the workers were. A halted task is still the *current* task, so when the timer interrupt fired it charged that worker for time it had spent doing nothing at all. They looked like load and were mostly idle.
+
+They now do a bounded batch of genuine arithmetic — a checksum, so the ticks they are charged are ticks they actually earned — and then call `task_sleep`, which marks them blocked and reschedules. The idle task genuinely runs, and the numbers in the task list mean what they say.
+
+**Result.** Three workers now take about thirteen ticks a second between them rather than appearing to take the machine, and the idle task holds around forty per cent with all three running.
+
+The tuning took two passes and both are worth recording. At a twenty-thousand-iteration batch the workers earned *zero* ticks in three seconds: each burst finished well inside a single timer tick, so they were never the running task when the interrupt arrived, and the task list showed nothing climbing at all. At eight million with a twenty-tick sleep all three climb steadily. That also changed what the demonstration can claim — a fixed batch and a fixed sleep produce near-identical shares, so the honest line is that the scheduler divides time *fairly*, not that the three numbers differ.
+
+---
+
+### 3.28 A window sank behind the panels a second after being clicked
+
+**Situation.** Clicking Notepad brought it to the front, and roughly a second later it dropped behind Task Manager and Kernel Lab on its own, with nobody touching the mouse. Clicking again repeated the cycle, so the window could not be used.
+
+**Task.** The desktop has a cheap repaint path for the windows whose contents change on their own — the task list, the statistics panel, the lab. Once a second it redraws those and copies them to the screen, instead of rebuilding the whole desktop.
+
+**Action.** Windows are painted in array order, later ones on top. Redrawing only the live panels therefore painted them over anything above them that overlapped — which is exactly what Notepad was. The "a second later" was the refresh interval, and nothing was reopening: the window was being buried.
+
+The path now marks the live panels, then marks any window above them that overlaps one, and paints that set in z-order.
+
+**Result.** Notepad stays where it is put. Verified by opening it over both panels and leaving it for three and a half seconds — several refreshes, well past the point where it used to sink.
+
+The general shape of the mistake is worth keeping: a partial repaint is an assertion that nothing else needs redrawing, and that assertion has to account for what is *in front of* the thing being repainted, not only the thing itself.
+
+---
+
+### 3.29 The system call interface existed and nothing used it
+
+**Situation.** The kernel implements system calls properly — one interrupt gate with a descriptor privilege level of 3, four calls behind it, and a ring 3 program that the processor kills when it reaches for a hardware port. But `int 0x80` appeared on exactly two lines in the whole source tree, both inside the demonstration code. Nothing a user of the desktop could do would ever produce a system call.
+
+**Task.** Every application on the desktop — the editor, the file manager, the task list — is compiled into the kernel and runs at ring 0. Saving a file from the editor called the filesystem directly, as an ordinary C function call.
+
+**Action.** That is a defensible architecture for a kernel this size, but it made "the system uses system calls" a statement about the diagram rather than about the code. Rather than claim it, we made it true for one real operation: saving a file now loads the call number into `eax` and the name, buffer and length into `ebx`, `ecx` and `edx`, and executes `int 0x80`. The dispatcher gained a write-file call and reaches the filesystem from there.
+
+We also added a counter that only increments inside the interrupt handler, and a command that prints it, so the trap can be demonstrated rather than asserted.
+
+**Result.** Saving a file from the editor now genuinely traps into the kernel. Verified end to end with the graphical desktop running and a disk attached: seven calls serviced at the prompt, eight immediately after pressing Save, and the file present in the listing at the right size with that run's timestamp.
+
+The scope is stated rather than blurred. One service is routed through the gate, not the whole desktop; the applications are still kernel code and could still call the filesystem directly, they simply no longer do. Making all of them user programs would require a process model, user-space binaries and a loader, which was outside what this project set out to build.
+
+---
+
+### 3.30 A script that only broke when it was read aloud
+
+**Situation.** The presentation script for the project demonstration was written, reviewed and looked correct. Walking through it in front of the running system, two lines did not survive contact.
+
+**Task.** The script had been written by reading the source and reasoning about what the interface would show.
+
+**Action.** We ran the whole walkthrough against the built system instead of reading it. The script told the presenter to point at a "stack" column that does not exist in the graphical task list — that is the text-mode command; the window labels the same figure "Memory" and prints it in kilobytes. And it placed the line "the busiest thing is the idle task" *after* starting three workers, at which point idle sits at forty-one per cent and the kernel at forty-two, so the sentence would have been spoken over a screen showing the opposite.
+
+**Result.** Both fixed, and the same pass confirmed the parts that did work: ending one worker leaves the other two climbing, the processor hog now runs its full ten seconds, and the preemption demonstration reports forty forced switches in the window against forty-one measured from the shell.
+
+The lesson is the cheapest one in the project and the easiest to skip: a demonstration script is code, and reading it is not testing it.
+
+---
+
+### 3.31 *(Add anything else you hit)*
 
 **Situation.**
 **Task.**
@@ -486,9 +578,10 @@ All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus bo
 - Faults contained: the offending task dies, the kernel and shell continue
 - Shell with 25 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
 - PCI bus enumeration, and a VMware SVGA-II driver using the adapter's command FIFO
-- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, a terminal with mouse-wheel scrollback, and a file manager pinned to the taskbar
+- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, a terminal with mouse-wheel scrollback, a file manager, Task Manager, Notepad, and Kernel Lab
+- Shell experiments (scheduler, synchronisation, faults, GPU) remain as commands; the same primitives are also reachable from **Start → Kernel Lab**
 - Anti-aliased text rendered from greyscale coverage atlases generated at build time
-- An in-memory filesystem with create, read, write, append and delete, growable allocations, and per-file timestamps
+- An ATA-backed filesystem with create, read, write, append and delete; writes survive reboot when a disk is attached, and fall back to RAM when it is not
 - Atomic console output: `kprintf` defers preemption so concurrent tasks cannot splice each other's lines
 - `make run`, `make test` and `make debug` from a clean clone
 
@@ -496,7 +589,7 @@ All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus bo
 
 The limitations in §1.3 are the honest list: memory is not isolated between rings, syscall pointers are unvalidated, the scheduler has no priorities, and the race-variance check is statistical. None of these were discovered late; all are consequences of scope decisions.
 
-The filesystem keeps its files in the heap, so nothing survives a reboot. That is a missing block layer rather than a missing filesystem: putting the same namespace on a disk needs an ATA or AHCI driver underneath it and a partition table and on-disk format on top, none of which changes what the layer above does.
+The filesystem is write-through to ATA when a disk answered IDENTIFY, and RAM-only when none did. The namespace above the block layer is the same in both cases: names, growable allocations, timestamps. The on-disk format is sized for this table (64 files, 64 KB each), not a general-purpose volume.
 
 The 3D pipeline is the one feature that was implemented and could not be demonstrated. The driver is complete and the adapter advertises the 3D capability bit, but it reports a 3D hardware version of zero, which is the adapter's way of saying the host will not expose the pipeline to this guest. The driver correctly declines rather than issuing commands into a FIFO that will not execute them. 2D acceleration through the same command FIFO does work and is measurable.
 
@@ -529,7 +622,7 @@ Printed output proves nothing on its own — a single loop emitting `A B A B` is
 
 **Automated:** `selftest` runs 30 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
 
-**Screenshots** captured headlessly via QEMU's `screendump` are in [`docs/images/`](docs/images/).
+**Screenshots** from the running kernel are in [`docs/images/`](docs/images/). The three-minute live walkthrough is [`docs/SHOWCASE.md`](docs/SHOWCASE.md).
 
 ---
 
