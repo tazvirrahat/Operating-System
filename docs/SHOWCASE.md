@@ -51,8 +51,8 @@ Nothing to click. Just the desktop on screen.
 
 **Do:** point at the three `worker_` rows and the loops counter.
 
-> "There they are. The tick counts are climbing, and they're all different
-> numbers. That's real CPU time being split between them."
+> "There they are. All three tick counts are climbing, at about the same rate —
+> that's the scheduler giving each of them a fair share."
 
 **Do:** cut to `kernel/task.c:348`.
 
@@ -72,7 +72,8 @@ Leave the workers running.
 >
 > "Nothing. The mouse is gone too. One bad program has taken the whole machine."
 
-**Do:** wait about three seconds for it to release.
+**Do:** wait for it to release. It runs for ten seconds, so use the time — try
+the mouse, try typing again.
 
 > "And it comes back on its own."
 
@@ -170,8 +171,8 @@ close.
   don't click by position.
 - **Notepad ignores keys until you click its page.** Every time you come back to
   it. This is the most likely reason you'll need a retake.
-- **Sharing OFF kills the mouse too**, for about three seconds. That's the demo
-  working. Don't click around.
+- **Sharing OFF kills the mouse too**, for ten seconds. That's the demo working.
+  Don't click around — it releases on its own.
 - **The unlocked race is a race.** Now and then it comes out clean. Run it again.
 
 If Notepad's Save ever says "RAM only", the disk didn't attach — don't claim the

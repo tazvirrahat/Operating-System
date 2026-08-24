@@ -151,6 +151,11 @@ uint32_t heap_base(void)
     return heap_start;
 }
 
+uint32_t heap_size_bytes(void)
+{
+    return heap_size;
+}
+
 uint32_t heap_check(void)
 {
     for (block_t *b = head; b; b = b->next) {

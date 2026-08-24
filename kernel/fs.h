@@ -1,19 +1,13 @@
-/* fs.h — an in-memory filesystem.
+/* fs.h — a flat namespace, optionally backed by an ATA disk.
  *
- * Files live in the kernel heap rather than on a disk. There is no storage
- * driver in this kernel -- reaching a real disk would mean an ATA or AHCI
- * driver and then a partition and on-disk format on top of it -- so nothing
- * here survives a reboot, and the name says so.
+ * The in-memory table is the filesystem: names map to contents, allocations
+ * grow and shrink, timestamps come from the RTC. The disk is a write-through
+ * copy of that table so the same files come back after a reboot.
  *
- * What it does provide is the part that is actually a filesystem: a namespace
- * mapping names to contents, allocation and release of the space those
- * contents occupy, metadata about each file, and the open/read/write/close
- * cycle that callers expect. Those are the same concerns a disk-backed
- * filesystem has; only the block layer underneath is missing.
- *
- * The namespace is flat. Directories would mean path parsing and a tree walk
- * for every lookup, and they do not demonstrate anything the flat version
- * does not.
+ * There is no directory tree and no general-purpose on-disk format. The
+ * layout is sized for this table (64 files, 64 KB each) and nothing else.
+ * If no drive answers IDENTIFY, behaviour is exactly the original RAM-only
+ * kernel: files live in the heap and vanish on reset.
  */
 #ifndef FS_H
 #define FS_H
@@ -46,7 +40,9 @@ fs_file_t *fs_create(const char *name);
 
 fs_file_t *fs_find(const char *name);
 
-/* Replace a file's contents. Grows the allocation if needed. */
+/* Replace a file's contents. Grows the allocation if needed. On a disk
+ * this is write-through: returning true means the bytes are on the drive,
+ * not only in RAM. */
 bool fs_write(const char *name, const void *data, uint32_t size);
 
 /* Append to a file, creating it if absent. */
@@ -59,5 +55,17 @@ const fs_file_t *fs_at(int index);
 
 int      fs_file_count(void);
 uint32_t fs_bytes_used(void);
+
+/* Last mutating call's failure, or an empty string. */
+const char *fs_error(void);
+
+bool        fs_on_disk(void);
+const char *fs_boot_state(void);
+
+/* Pause write-through so a burst of tiny appends is one disk write. The
+ * in-memory file stays live (File Explorer and Notepad read it). Nested
+ * calls are not supported. */
+void fs_defer_persist(bool defer);
+bool fs_flush_file(const char *name);
 
 #endif /* FS_H */

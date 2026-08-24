@@ -3,6 +3,7 @@
 #include "pic.h"
 #include "io.h"
 #include "console.h"
+#include "task.h"
 
 #define PS2_DATA    0x60
 #define PS2_STATUS  0x64
@@ -126,19 +127,28 @@ static void mouse_isr(registers_t *regs)
      * a button is currently held, and polling for level would fire repeatedly
      * for one press. */
     uint8_t now = flags & 0x07;
+    uint8_t old_buttons = buttons;
     pending_clicks |= (uint8_t)(now & ~buttons);
     buttons = now;
 
     /* The fourth byte is a signed 4-bit wheel movement in its low nibble:
      * negative for scrolling down, positive for up. The upper nibble carries
      * the extra buttons on a five-button mouse, which are ignored here. */
+    int8_t z = 0;
     if (has_wheel) {
-        int8_t z = (int8_t)(packet[3] & 0x0F);
+        z = (int8_t)(packet[3] & 0x0F);
         if (z & 0x08)
             z |= (int8_t)0xF0;      /* sign-extend from four bits */
 
         wheel_delta += z;
     }
+
+    /* Position is overwritten in place, so a burst of packets while the GUI
+     * is halted collapses to the last sample. Wake only on a real change:
+     * empty packets still arrive and would otherwise bounce the waiter off
+     * hlt at full speed. */
+    if (dx != 0 || dy != 0 || now != old_buttons || z != 0)
+        task_idle_nudge();
 }
 
 void mouse_init(void)
@@ -229,6 +239,11 @@ bool mouse_take_click(uint8_t button)
         return true;
     }
     return false;
+}
+
+bool mouse_has_pending_input(void)
+{
+    return pending_clicks != 0 || wheel_delta != 0;
 }
 
 void mouse_set_bounds(int w, int h)

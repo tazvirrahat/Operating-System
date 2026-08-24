@@ -30,6 +30,11 @@ uint8_t mouse_buttons(void);
 /* True if a button went down since the last call. Consumed by reading. */
 bool mouse_take_click(uint8_t button);
 
+/* Click or wheel waiting to be read. Does not consume. The GUI uses this
+ * to skip an idle wait that would otherwise park a click until the next
+ * panel deadline. */
+bool mouse_has_pending_input(void);
+
 void mouse_set_bounds(int w, int h);
 
 /* Packets received since boot, for diagnostics. */

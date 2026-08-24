@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "pci.h"
 #include "rtc.h"
+#include "ata.h"
 #include "fs.h"
 #include "svga.h"
 #include "svga3d.h"
@@ -42,7 +43,7 @@ static void banner(void)
 {
     vga_set_color(VGA_LGREEN, VGA_BLACK);
     kprintf("\n");
-    kprintf("  MyOS v1.0 - a bare metal x86 kernel\n");
+    kprintf("  TazOS v1.0 - a bare metal x86 kernel\n");
     vga_set_color(VGA_DGREY, VGA_BLACK);
     kprintf("  an operating system for i386, running directly on the hardware\n\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
@@ -97,9 +98,18 @@ void kmain(uint32_t magic, multiboot_info_t *mb)
     uint32_t heap_start = ((uint32_t)&kernel_end + 0xFFF) & ~0xFFFU;
     heap_init(heap_start, HEAP_SIZE);
 
+    /* The ATA controller lives at the same legacy ports it has since the
+     * original PC, so it could come up with the keyboard. It waits until
+     * after the heap only because the filesystem, which consumes the probe
+     * result, allocates. Probe here so fs_init can choose RAM vs disk in
+     * one place rather than growing a second bring-up path. */
+    ata_init();
+
     /* The filesystem stores file contents in the heap, so it cannot come up
      * before the heap exists. It also stamps each file with the wall-clock
-     * time, which is why the RTC is initialised earlier. */
+     * time, which is why the RTC is initialised earlier. If ata_init found
+     * a drive, this loads or formats it; otherwise the namespace stays in
+     * RAM and the boot line says so. */
     fs_init();
 
     /* Now that memory is mapped and allocatable, bring up the framebuffer and

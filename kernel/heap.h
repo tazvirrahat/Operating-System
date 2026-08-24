@@ -33,6 +33,7 @@ void  heap_get_stats(heap_stats_t *out);
 
 /* Base address of the heap region, for reporting. */
 uint32_t heap_base(void);
+uint32_t heap_size_bytes(void);
 
 /* Walks the block list checking header magic and size consistency.
  * Returns 0 if intact, or the address of the first corrupt block. */

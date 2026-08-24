@@ -3,6 +3,7 @@
 #include "pic.h"
 #include "io.h"
 #include "console.h"
+#include "task.h"
 
 #include <stdint.h>
 
@@ -65,6 +66,7 @@ static void buffer_push(char c)
 
     buffer[head] = c;
     head = next;
+    task_idle_nudge();
 }
 
 static void keyboard_isr(registers_t *regs)

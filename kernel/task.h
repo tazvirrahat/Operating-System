@@ -22,6 +22,10 @@
  * terminates that task. */
 #define KERNEL_TASK_ID 1
 
+/* Sleep until this tick, or until task_idle_nudge(). Used by the GUI when
+ * the scene is idle so the dedicated idle task can halt the CPU. */
+#define TASK_SLEEP_FOREVER 0xFFFFFFFFu
+
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
@@ -37,6 +41,7 @@ typedef struct task {
     char         name[TASK_NAME_LEN];
     task_state_t state;
     uint32_t     ticks;                 /* CPU time received, in timer ticks */
+    uint32_t     wake_tick;             /* 0 = not sleeping; else unblock at this pit tick */
     struct task *next;
 } task_t;
 
@@ -60,6 +65,26 @@ void    task_exit(void) __attribute__((noreturn));
 void    task_block(void);
 void    task_unblock(task_t *t);
 
+/* Park the caller until wake_tick (or forever) or an input IRQ. Unlike
+ * yield, the caller is not READY, so the idle task can halt. The deadline
+ * is the same wake_tick walker as task_sleep(); mouse and keyboard still
+ * call task_idle_nudge() so a click does not wait for the next panel. */
+void    task_idle_wait(uint32_t wake_tick);
+void    task_idle_nudge(void);
+
+/* Block until `ticks` timer interrupts have elapsed. Other READY tasks run
+ * in the meantime, which is how a waiter overlaps with someone else's
+ * compute on a single CPU. `hlt` is not enough: it still leaves the caller
+ * READY, so pick_next would come straight back. */
+void    task_sleep(uint32_t ticks);
+
+/* True if some non-idle task other than the caller is READY. The GUI yields
+ * to those rather than parking, so workers keep the CPU. */
+bool    task_others_ready(void);
+
+int     task_idle_id(void);
+bool    task_is_idle(const task_t *t);
+
 task_t *task_current(void);
 task_t *task_list(void);            /* head of the list, for iteration */
 int     task_count(void);
@@ -69,6 +94,21 @@ uint32_t task_switch_count(void);
  * itself while still running on the stack in question, so it happens from
  * another context. */
 void    task_reap(void);
+
+/* Mark a task dead from the outside. Used to recover a deadlock demonstration
+ * without rebooting: the victim is skipped by the scheduler and reaped, and
+ * the kernel task is refused so a mis-click cannot take down the shell. */
+void    task_kill(task_t *t);
+
+task_t *task_by_id(int id);
+task_t *task_by_name(const char *name);
+
+/* Recent CPU owners, one sample per timer tick. Written from the tick path
+ * with interrupts already off, so the store is the whole critical section.
+ * Length is a power of two so the index is a mask rather than a divide. */
+#define SCHED_TRACE_LEN 256
+
+uint32_t task_sched_trace(uint32_t *ids, uint32_t max);
 
 /* Short critical sections that must not be split across a context switch.
  *

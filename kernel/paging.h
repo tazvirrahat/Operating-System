@@ -40,4 +40,34 @@ uint32_t paging_mapped_bytes(void);
 /* Read CR2, which the CPU fills with the faulting linear address. */
 uint32_t paging_fault_address(void);
 
+/* Page-table flag bits, matching the hardware. Exposed so a visualisation
+ * can name the same bits the walk used rather than duplicating the masks. */
+#define PTE_PRESENT  0x001
+#define PTE_WRITE    0x002
+#define PTE_USER     0x004
+#define PTE_LARGE    0x080
+
+#define PAGING_ENTRIES     1024
+#define PAGING_PAGE_SIZE   4096
+#define PAGING_LARGE_SIZE  (4u * 1024u * 1024u)
+
+/* One step of the hardware walk, reported rather than performed: the MMU
+ * already did this for every fetch. `phys` is 0 when the address is not
+ * present — including page 0, which is left unmapped on purpose. */
+typedef struct {
+    uint32_t virt;
+    uint32_t dir_index;
+    uint32_t tab_index;
+    uint32_t pde;
+    uint32_t pte;           /* 0 when the directory entry is a 4 MB page */
+    uint32_t phys;
+    bool     present;
+    bool     large;
+    bool     user;
+    bool     writable;
+} page_walk_t;
+
+void     paging_walk(uint32_t virt, page_walk_t *out);
+uint32_t paging_pde(uint32_t index);
+
 #endif /* PAGING_H */

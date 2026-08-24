@@ -8,6 +8,7 @@ extern const uint8_t font8x8[95][8];
 
 static volatile uint8_t *video;     /* the real framebuffer, in video memory */
 static uint32_t         *back;      /* our copy, in ordinary RAM */
+static uint32_t          phys_addr;
 
 static uint32_t width, height, pitch;
 static uint8_t  bpp;
@@ -35,7 +36,8 @@ bool fb_init(const multiboot_info_t *mb)
     /* The framebuffer can sit anywhere in the physical address space, often
      * well above installed RAM. It is only usable because paging identity-maps
      * that range; a mapping restricted to reported memory would exclude it. */
-    video  = (volatile uint8_t *)(uint32_t)mb->framebuffer_addr;
+    phys_addr = (uint32_t)mb->framebuffer_addr;
+    video     = (volatile uint8_t *)phys_addr;
     width  = mb->framebuffer_width;
     height = mb->framebuffer_height;
     pitch  = mb->framebuffer_pitch;
@@ -94,6 +96,8 @@ bool fb_init(const multiboot_info_t *mb)
 bool     fb_available(void) { return ready; }
 uint32_t fb_width(void)     { return width; }
 uint32_t fb_height(void)    { return height; }
+uint32_t fb_phys_addr(void) { return phys_addr; }
+uint32_t fb_nbytes(void)    { return ready ? height * pitch : 0; }
 
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -139,6 +143,40 @@ void fb_mark_dirty(int x, int y, int w, int h)
     if (y1 > dirty_y1) dirty_y1 = y1;
 }
 
+static void copy_front(int x0, int y0, int x1, int y1)
+{
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)width)  x1 = (int)width;
+    if (y1 > (int)height) y1 = (int)height;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+
+    int w = x1 - x0;
+
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *src = &back[y * width + x0];
+        volatile uint8_t *dst = video + (uint32_t)y * pitch + (uint32_t)x0 * 4;
+
+        memcpy((void *)dst, src, (uint32_t)w * 4);
+    }
+
+    if (svga_available())
+        svga_update(x0, y0, w, y1 - y0);
+}
+
+void fb_copy_rect(int x, int y, int w, int h)
+{
+    if (!ready || w <= 0 || h <= 0)
+        return;
+    copy_front(x, y, x + w, y + h);
+}
+
+void fb_reset_dirty(void)
+{
+    dirty = false;
+}
+
 void fb_present(void)
 {
     if (!ready || !dirty)
@@ -147,22 +185,7 @@ void fb_present(void)
     /* Copy row by row. Writes to video memory are uncached and, under a
      * hypervisor, intercepted, so the only thing that matters here is moving
      * as few bytes as possible. */
-    int w = dirty_x1 - dirty_x0;
-
-    for (int y = dirty_y0; y < dirty_y1; y++) {
-        const uint32_t *src = &back[y * width + dirty_x0];
-        volatile uint8_t *dst = video + (uint32_t)y * pitch + (uint32_t)dirty_x0 * 4;
-
-        memcpy((void *)dst, src, (uint32_t)w * 4);
-    }
-
-    /* On an SVGA adapter, writing to the framebuffer is not enough on its own:
-     * the device has to be told which region changed before it will show it.
-     * The bounds are already tracked for the copy above, so the same rectangle
-     * is handed to the adapter. */
-    if (svga_available())
-        svga_update(dirty_x0, dirty_y0, w, dirty_y1 - dirty_y0);
-
+    copy_front(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
     dirty = false;
 }
 

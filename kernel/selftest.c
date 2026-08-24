@@ -9,6 +9,7 @@
 #include "vga.h"
 #include "string.h"
 #include "fs.h"
+#include "ata.h"
 
 #include <stdbool.h>
 
@@ -126,6 +127,73 @@ static void test_scheduler(void)
     CHECK(task_switch_count() > switches_at_on,
           "preemption on  -> switching resumes\n");
 
+    /* Short job vs hog. Off: the urgent task cannot run until the hog
+     * finishes, so its completion from pair-start is about as long as the
+     * hog. On: it finishes much earlier. The hog's own duration is not
+     * the claim. */
+    {
+        preempt_jobs_info_t off, on;
+        uint32_t short_off, short_on, long_off;
+
+        preempt_jobs_run(false);
+        preempt_jobs_snapshot(&off);
+        preempt_jobs_run(true);
+        preempt_jobs_snapshot(&on);
+
+        short_off = (off.short_end > off.pair_start)
+                    ? off.short_end - off.pair_start : 0;
+        short_on  = (on.short_end > on.pair_start)
+                    ? on.short_end - on.pair_start : 0;
+        long_off  = (off.long_end > off.pair_start)
+                    ? off.long_end - off.pair_start : 0;
+
+        kprintf("         short job: hogged %u ticks, sharing %u ticks "
+                "(hog was %u)\n",
+                short_off, short_on, long_off);
+
+        CHECK(off.finished && long_off > 0 && short_off >= (long_off * 3) / 4,
+              "preempt off -> short job waits behind the hog (%u >= ~%u)\n",
+              short_off, long_off);
+        CHECK(on.finished && short_on > 0 && short_on < short_off / 2,
+              "preempt on  -> short job finishes sooner (%u < %u / 2)\n",
+              short_on, short_off);
+    }
+
+    /* Timed desktop hog: spawn and do not join in the starter. Off: the
+     * caller cannot run until the hog's pit deadline. On: the caller
+     * still gets slices. The hog always exits by itself. */
+    {
+        desktop_hog_info_t hog;
+        uint32_t t0, wall;
+
+        desktop_hog_start(false, 30);
+        t0 = pit_ticks();
+        do {
+            task_yield();
+            desktop_hog_snapshot(&hog);
+        } while (hog.running && pit_ticks() - t0 < 200);
+
+        wall = (hog.end_tick > hog.start_tick)
+               ? hog.end_tick - hog.start_tick : 0;
+        CHECK(!hog.running && hog.finished && wall >= 25 && wall < 80,
+              "hog off -> held the CPU ~%u ticks then recovered\n", wall);
+
+        desktop_hog_start(true, 30);
+        t0 = pit_ticks();
+        {
+            uint32_t yields = 0;
+
+            do {
+                task_yield();
+                yields++;
+                desktop_hog_snapshot(&hog);
+            } while (hog.running && pit_ticks() - t0 < 200);
+
+            CHECK(!hog.running && hog.finished && yields > 5,
+                  "hog on  -> caller ran %u times during the hog\n", yields);
+        }
+    }
+
     task_t *culprit = 0;
     CHECK(task_check_stacks(&culprit), "all stack guard words intact\n");
 }
@@ -189,6 +257,55 @@ static void test_sync(void)
     CHECK(producer_consumer_run(false),
           "producer/consumer: %d items through a %d-slot buffer, none lost\n",
           PC_ITEM_COUNT, PC_BUFFER_SLOTS);
+
+    deadlock_start(true);
+    {
+        uint32_t until = pit_ticks() + 80;
+        while (!deadlock_finished() && pit_ticks() < until)
+            task_yield();
+    }
+    CHECK(deadlock_finished(),
+          "ordered lock acquisition completes without deadlock\n");
+    deadlock_stop();
+
+    /* Same jobs: wait then compute. Two tasks should finish sooner because
+     * one computes while the other is blocked. Margin is one wait period so
+     * scheduler jitter cannot hide a real overlap. */
+    {
+        uint32_t seq = threads_run(false);
+        uint32_t thr = threads_run(true);
+
+        CHECK(seq > 0 && thr > 0 && thr < seq
+              && (seq - thr) >= (uint32_t)THREAD_WAIT_TICKS,
+              "overlapping threads finish sooner than sequential (%u < %u ticks)\n",
+              thr, seq);
+    }
+
+    /* Two writers, one file. Locked: every line is a complete record.
+     * Unlocked: the lines mix. Retry unlocked once if the timer was kind. */
+    {
+        file_race_info_t u, l;
+        int tries;
+
+        file_race_run(true);
+        file_race_snapshot(&l);
+        CHECK(l.ran && l.torn == 0
+              && l.intact_a == FILE_RACE_LINES
+              && l.intact_b == FILE_RACE_LINES,
+              "locked till.log: %d A + %d B, 0 torn\n",
+              l.intact_a, l.intact_b);
+
+        for (tries = 0; tries < 2; tries++) {
+            file_race_run(false);
+            file_race_snapshot(&u);
+            if (u.torn > 0 || u.intact_a + u.intact_b < FILE_RACE_LINES * 2)
+                break;
+        }
+        CHECK(u.ran && (u.torn > 0
+              || u.intact_a + u.intact_b < FILE_RACE_LINES * 2),
+              "unlocked till.log tears or drops records (%d torn, %d+%d intact)\n",
+              u.torn, u.intact_a, u.intact_b);
+    }
 }
 
 /* ---- timer -------------------------------------------------------------- */
@@ -303,6 +420,38 @@ static void test_fs(void)
           "deleted file's storage returned to the heap (%u bytes before and after)\n",
           heap_after.used_bytes);
 }
+
+/* ---- ATA PIO ------------------------------------------------------------ */
+
+static void test_ata(void)
+{
+    uint8_t wr[512];
+    uint8_t rd[512];
+    uint32_t lba;
+    int i;
+
+    /* Absent drive: skip rather than fail. make test must pass both with
+     * a disk attached and with the image not plugged in. */
+    if (!ata_present())
+        return;
+
+    kprintf("ATA\n");
+
+    lba = ata_sectors() - 1;
+    CHECK(ata_sectors() > 8208, "drive is large enough for the filesystem (%u sectors)\n",
+          ata_sectors());
+
+    if (ata_sectors() <= 8208)
+        return;
+
+    for (i = 0; i < 512; i++)
+        wr[i] = (uint8_t)(0xA5 ^ i);
+    wr[0] = 'T'; wr[1] = 'a'; wr[2] = 'z'; wr[3] = 'S';
+
+    CHECK(ata_write(lba, wr) && ata_read(lba, rd) && memcmp(wr, rd, 512) == 0,
+          "PIO write/readback of scratch sector %u\n", lba);
+}
+
 /* ---- entry point -------------------------------------------------------- */
 
 int selftest_run(void)
@@ -317,6 +466,7 @@ int selftest_run(void)
     test_sync();
     test_protection();
     test_fs();
+    test_ata();
 
     kprintf("\n");
     if (failed == 0)

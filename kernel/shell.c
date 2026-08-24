@@ -14,9 +14,11 @@
 #include "pci.h"
 #include "svga.h"
 #include "fb.h"
+#include "ata.h"
 #include "fs.h"
 #include "rtc.h"
 #include "wallpaper.h"
+#include "paging.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -110,6 +112,83 @@ static void cmd_meminfo(int argc, char **argv)
             heap_check() == 0 ? "structure intact" : "CORRUPT");
 }
 
+static void cmd_mmu(int argc, char **argv)
+{
+    uint32_t addr = 0;
+    bool given = false;
+
+    if (argc > 1) {
+        const char *end;
+        addr = strtoul(argv[1], &end);
+        given = end && *end == '\0';
+        if (!given) {
+            kprintf("usage: mmu [addr]\n");
+            return;
+        }
+    }
+
+    kprintf("\npaging %s, %u MB identity mapped\n",
+            paging_enabled() ? "on" : "OFF",
+            paging_mapped_bytes() / (1024 * 1024));
+
+    if (!given) {
+        kprintf("heap   %08x  fb %08x\n", heap_base(), fb_phys_addr());
+        kprintf("pass an address to walk the page tables, e.g. mmu 0x100000\n\n");
+        return;
+    }
+
+    page_walk_t w;
+    paging_walk(addr, &w);
+
+    kprintf("virt %08x  dir[%u]  table[%u]\n", w.virt, w.dir_index, w.tab_index);
+    kprintf("  pde %08x  %s %s %s %s\n",
+            w.pde,
+            (w.pde & PTE_PRESENT) ? "P" : "-",
+            (w.pde & PTE_WRITE)   ? "W" : "-",
+            (w.pde & PTE_USER)    ? "U" : "-",
+            (w.pde & PTE_LARGE)   ? "4MB" : "4KB");
+
+    if (w.large) {
+        kprintf("  4 MB page  phys %08x\n\n", w.phys);
+        return;
+    }
+
+    kprintf("  pte %08x  %s %s %s\n",
+            w.pte,
+            (w.pte & PTE_PRESENT) ? "P" : "-",
+            (w.pte & PTE_WRITE)   ? "W" : "-",
+            (w.pte & PTE_USER)    ? "U" : "-");
+
+    if (w.present)
+        kprintf("  phys %08x\n\n", w.phys);
+    else
+        kprintf("  not present - a load here would page-fault\n\n");
+}
+
+static void cmd_deadlock(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "stop") == 0) {
+        deadlock_stop();
+        kprintf("deadlock demo reset, %d task%s left\n",
+                task_count(), task_count() == 1 ? "" : "s");
+        return;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "kill") == 0) {
+        deadlock_kill_victim();
+        kprintf("killed lock_a; lock_b should now finish.\n");
+        return;
+    }
+
+    bool ordered = argc > 1 && strcmp(argv[1], "ordered") == 0;
+
+    deadlock_start(ordered);
+    kprintf(ordered
+            ? "both tasks lock M1 then M2 - they should complete.\n"
+            : "opposite lock order - they will wait for each other.\n");
+    kprintf("the shell stays usable. 'deadlock kill' or 'deadlock stop'.\n");
+}
+
 static void cmd_spawn(int argc, char **argv)
 {
     int n = 3;
@@ -133,7 +212,22 @@ static void cmd_spawn(int argc, char **argv)
 
 static void cmd_prodcons(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc > 1 && strcmp(argv[1], "stop") == 0) {
+        pc_live_stop();
+        kprintf("live producer/consumer stopped\n");
+        return;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "live") == 0) {
+        if (!pc_live_start()) {
+            kprintf("live producer/consumer already running\n");
+            return;
+        }
+        kprintf("live producer/consumer started - %d slots, %d items.\n",
+                PC_BUFFER_SLOTS, PC_LIVE_ITEMS);
+        kprintf("the shell stays usable; 'prodcons stop' to end it.\n");
+        return;
+    }
 
     kprintf("\nbounded buffer, %d slots, %d items.\n",
             PC_BUFFER_SLOTS, PC_ITEM_COUNT);
@@ -169,10 +263,15 @@ static void cmd_bg(int argc, char **argv)
         n = (int)strtoul(argv[1], &end);
     }
 
-    spawn_background(n);
-    kprintf("started %d background worker%s - the shell is still responsive.\n",
-            n, n == 1 ? "" : "s");
-    kprintf("try 'top' to watch them, then 'bg stop'.\n");
+    int started = spawn_background(n);
+    if (!started) {
+        kprintf("workers already running - 'bg stop' first\n");
+        return;
+    }
+
+    kprintf("started %d background worker%s - they yield, so the shell stays up\n",
+            started, started == 1 ? "" : "s");
+    kprintf("even with 'preempt off'. try 'top', then 'bg stop'.\n");
 }
 
 static void cmd_preempt(int argc, char **argv)
@@ -185,14 +284,166 @@ static void cmd_preempt(int argc, char **argv)
 
     if (strcmp(argv[1], "off") == 0) {
         task_set_preempt(false);
-        kprintf("preemption OFF - a running task will now keep the CPU\n");
-        kprintf("               indefinitely. try 'spawn 3' to see it break.\n");
+        kprintf("preemption OFF - a task that never yields keeps the CPU.\n");
+        kprintf("               'spawn' shows that; background workers still yield.\n");
     } else if (strcmp(argv[1], "on") == 0) {
         task_set_preempt(true);
         kprintf("preemption on - the timer will force switches again\n");
     } else {
         kprintf("usage: preempt on|off\n");
     }
+}
+
+static void cmd_preemptjob(int argc, char **argv)
+{
+    preempt_jobs_info_t off, on;
+    uint32_t s_off, s_on, hog_off, hog_on;
+
+    (void)argc;
+    (void)argv;
+
+    kprintf("\none hog (~%d ticks of compute) and one short job (~%d).\n",
+            PREEMPT_LONG_TICKS, PREEMPT_SHORT_TICKS);
+    kprintf("neither yields. preemption off: the short job waits.\n");
+    kprintf("preemption on: it finishes while the hog is still running.\n\n");
+
+    preempt_jobs_run(false);
+    preempt_jobs_snapshot(&off);
+    preempt_jobs_run(true);
+    preempt_jobs_snapshot(&on);
+
+    s_off   = (off.short_end > off.pair_start) ? off.short_end - off.pair_start : 0;
+    s_on    = (on.short_end > on.pair_start) ? on.short_end - on.pair_start : 0;
+    hog_off = (off.long_end > off.pair_start) ? off.long_end - off.pair_start : 0;
+    hog_on  = (on.long_end > on.pair_start) ? on.long_end - on.pair_start : 0;
+
+    kprintf("hogged:  short job finished in %u ticks  (hog %u)\n", s_off, hog_off);
+    kprintf("sharing: short job finished in %u ticks  (hog %u)\n", s_on, hog_on);
+    if (s_on && s_off && s_on < s_off)
+        kprintf("the short job finished sooner because it got CPU slices.\n");
+    kprintf("the hog did not get faster. total work is the same.\n\n");
+}
+
+static void cmd_hog(int argc, char **argv)
+{
+    desktop_hog_info_t inf;
+    uint32_t ticks = DESKTOP_HOG_TICKS;
+    bool sharing = true;
+
+    if (argc >= 2 && strcmp(argv[1], "stop") == 0) {
+        desktop_hog_stop();
+        kprintf("hog: asked to finish (only takes effect if sharing is on).\n");
+        return;
+    }
+
+    desktop_hog_snapshot(&inf);
+    if (inf.running) {
+        kprintf("hog is already running (%s).\n",
+                inf.sharing ? "sharing on" : "sharing OFF");
+        return;
+    }
+
+    if (argc >= 2) {
+        if (strcmp(argv[1], "off") == 0)
+            sharing = false;
+        else if (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "start") == 0)
+            sharing = true;
+        else if (argv[1][0] >= '1' && argv[1][0] <= '9') {
+            const char *end;
+            uint32_t sec = strtoul(argv[1], &end);
+
+            if (sec < 1)
+                sec = 1;
+            if (sec > 5)
+                sec = 5;
+            ticks = sec * 100;
+            sharing = true;
+        } else {
+            kprintf("usage: hog start|stop|on|off|[1-5]\n");
+            kprintf("  start/on/N  sharing on - type while it runs\n");
+            kprintf("  off         sharing off - desktop freezes until it exits\n");
+            return;
+        }
+    }
+
+    if (argc >= 3 && strcmp(argv[2], "off") == 0)
+        sharing = false;
+
+    kprintf("hog: %u ticks (~%u s), sharing %s. never yields.\n",
+            ticks, ticks / 100, sharing ? "on" : "OFF");
+    if (sharing)
+        kprintf("open Task Manager: hog Ticks climbs. type in Notepad.\n");
+    else
+        kprintf("desktop will freeze until the hog exits by itself.\n");
+
+    desktop_hog_start(sharing, ticks);
+}
+
+static void cmd_filerace(int argc, char **argv)
+{
+    bool use_lock = false;
+    file_race_info_t info;
+    const fs_file_t *f;
+    uint32_t i, shown;
+
+    if (argc > 1) {
+        if (strcmp(argv[1], "on") == 0)
+            use_lock = true;
+        else if (strcmp(argv[1], "off") != 0) {
+            kprintf("usage: filerace on|off\n");
+            return;
+        }
+    }
+
+    kprintf("\ntwo writers, file '%s', %d records each, lock %s\n\n",
+            FILE_RACE_NAME, FILE_RACE_LINES, use_lock ? "held" : "not used");
+
+    file_race_run(use_lock);
+    file_race_snapshot(&info);
+
+    kprintf("open %s in Notepad or: cat %s\n\n", FILE_RACE_NAME, FILE_RACE_NAME);
+
+    f = fs_find(FILE_RACE_NAME);
+    if (!f || !f->data) {
+        kprintf("(file missing)\n\n");
+        return;
+    }
+
+    shown = f->size < 400 ? f->size : 400;
+    for (i = 0; i < shown; i++) {
+        char c = (char)f->data[i];
+        if (c == '\n')
+            kputc('\n');
+        else if (c >= 32 && c < 127)
+            kputc(c);
+        else
+            kputc('?');
+    }
+    if (f->size > shown)
+        kprintf("\n...\n");
+    kprintf("\n");
+}
+
+static void cmd_threads(int argc, char **argv)
+{
+    uint32_t seq, thr;
+
+    (void)argc;
+    (void)argv;
+
+    kprintf("\n%d jobs, each wait %u ticks then spin ~%u ticks of work.\n",
+            THREAD_JOBS, (uint32_t)THREAD_WAIT_TICKS,
+            (uint32_t)THREAD_COMPUTE_TICKS);
+    kprintf("same jobs both ways. one CPU: waits overlap, compute does not.\n\n");
+
+    seq = threads_run(false);
+    thr = threads_run(true);
+
+    kprintf("\nsequential %u ticks, overlapping %u ticks\n", seq, thr);
+    if (thr && seq && thr < seq)
+        kprintf("threaded shorter because one task computed while the other slept.\n\n");
+    else
+        kprintf("expected overlapping < sequential; run again.\n\n");
 }
 
 static void cmd_race(int argc, char **argv)
@@ -520,9 +771,11 @@ static void cmd_write(int argc, char **argv)
     buf[n++] = '\n';
 
     if (fs_write(argv[1], buf, (uint32_t)n))
-        kprintf("wrote %d bytes to %s\n", n, argv[1]);
+        kprintf("wrote %d bytes to %s%s\n", n, argv[1],
+                fs_on_disk() ? " (on disk)" : " (RAM only)");
     else
-        kprintf("write: failed (table full, or file too large)\n");
+        kprintf("write: failed (%s)\n",
+                fs_error()[0] ? fs_error() : "table full, or file too large");
 }
 
 static void cmd_append(int argc, char **argv)
@@ -545,9 +798,11 @@ static void cmd_append(int argc, char **argv)
     buf[n++] = '\n';
 
     if (fs_append(argv[1], buf, (uint32_t)n))
-        kprintf("appended %d bytes to %s\n", n, argv[1]);
+        kprintf("appended %d bytes to %s%s\n", n, argv[1],
+                fs_on_disk() ? " (on disk)" : " (RAM only)");
     else
-        kprintf("append: failed\n");
+        kprintf("append: failed (%s)\n",
+                fs_error()[0] ? fs_error() : "table full, or file too large");
 }
 
 static void cmd_rm(int argc, char **argv)
@@ -559,8 +814,30 @@ static void cmd_rm(int argc, char **argv)
 
     if (fs_delete(argv[1]))
         kprintf("removed %s\n", argv[1]);
+    else if (fs_error()[0])
+        kprintf("rm: %s: %s\n", argv[1], fs_error());
     else
         kprintf("rm: %s: no such file\n", argv[1]);
+}
+
+static void cmd_disk(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    kprintf("\n");
+    if (!ata_present()) {
+        kprintf("  drive     : none on primary IDE (0x1F0)\n");
+        kprintf("  filesystem: %s\n\n", fs_boot_state());
+        return;
+    }
+
+    kprintf("  model     : %s\n", ata_model()[0] ? ata_model() : "(unnamed)");
+    kprintf("  sectors   : %u (%u MB)\n", ata_sectors(), ata_sectors() / 2048u);
+    kprintf("  filesystem: %s, %d file%s, %u bytes\n",
+            fs_boot_state(), fs_file_count(),
+            fs_file_count() == 1 ? "" : "s", fs_bytes_used());
+    kprintf("  writes    : %u sectors\n\n", ata_writes());
 }
 
 static void cmd_wallpaper(int argc, char **argv)
@@ -685,14 +962,20 @@ static const command_t commands[] = {
     { "spawn",    "spawn [1-4]",      "run N tasks that never yield",              cmd_spawn    },
     { "bg",       "bg [1-4] | stop",  "background workers, shell stays usable",    cmd_bg       },
     { "preempt",  "preempt on|off",   "toggle timer preemption (ablation test)",   cmd_preempt  },
+    { "hog",      "hog start|stop|on|off|[1-5]", "CPU hog: freeze Notepad (off) or type while it runs (on)", cmd_hog },
+    { "preemptjob","preemptjob",      "short job vs hog, with and without sharing", cmd_preemptjob },
     { "race",     "race on|off [n]",  "shared counter with and without a mutex",   cmd_race     },
-    { "prodcons", "prodcons",         "bounded buffer with counting semaphores",   cmd_prodcons },
+    { "filerace", "filerace on|off",  "two writers, one file, torn vs clean lines", cmd_filerace },
+    { "prodcons", "prodcons [live]",  "bounded buffer with counting semaphores",   cmd_prodcons },
+    { "deadlock", "deadlock [ordered|kill|stop]", "circular wait, or the ordered fix", cmd_deadlock },
+    { "threads",  "threads",          "same jobs sequential vs two overlapping tasks", cmd_threads  },
     { "fault",    "fault <kind>",     "raise a real CPU exception in a task",      cmd_fault    },
     { "user",     "user [--syscall]", "run a task in ring 3 (privilege demo)",     cmd_user     },
     { "tasks",    "tasks",            "list tasks and their CPU time",             cmd_tasks    },
     { "gui",      "gui",              "graphical mode: windows, mouse, terminal",  cmd_gui      },
     { "top",      "top",              "live kernel monitor",                       cmd_top      },
     { "meminfo",  "meminfo",          "heap usage and block list state",           cmd_meminfo  },
+    { "mmu",      "mmu [addr]",       "walk the page tables for an address",       cmd_mmu      },
     { "lspci",    "lspci [n]",        "devices found on the pci bus",              cmd_lspci    },
     { "gpuinfo",  "gpuinfo",          "graphics adapter and acceleration",         cmd_gpuinfo  },
     { "gputest",  "gputest",          "benchmark cpu fills against gpu fills",      cmd_gputest  },
@@ -701,6 +984,7 @@ static const command_t commands[] = {
     { "write",    "write <f> <text>", "replace a file's contents",                 cmd_write    },
     { "append",   "append <f> <txt>", "add to a file",                             cmd_append   },
     { "rm",       "rm <file>",        "delete a file",                             cmd_rm       },
+    { "disk",     "disk",             "ATA drive, filesystem state, writes",       cmd_disk     },
     { "wallpaper","wallpaper [1-6]",  "change the desktop background",             cmd_wallpaper},
     { "date",     "date",             "wall-clock time from the cmos chip",        cmd_date     },
     { "uptime",   "uptime",           "time since boot, from timer ticks",         cmd_uptime   },

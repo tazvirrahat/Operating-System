@@ -74,7 +74,7 @@ void monitor_draw(void)
     rule();
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("| MyOS");
+    kprintf("| TazOS");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("   bare metal x86            uptime %02u:%02u:%02u",
             secs / 3600, (secs / 60) % 60, secs % 60);

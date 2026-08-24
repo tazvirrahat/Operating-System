@@ -5172,8 +5172,40 @@ void gui_run(void)
         } else if (panels_dirty) {
             panels_dirty = false;
 
+            /* Repainting a live panel must not punch through whatever is
+             * sitting on top of it.
+             *
+             * Windows are painted in array order, later on top, so redrawing
+             * only the panels put them in front of anything above them that
+             * overlapped -- click Notepad over Task Manager and the next
+             * one-second refresh painted Task Manager back over it. It looked
+             * like Notepad was reopening itself and sinking, with nobody
+             * touching the mouse.
+             *
+             * So: mark the panels, then mark anything above them they
+             * overlap, then paint that set in z-order. */
+            bool repaint[MAX_WINDOWS];
+
             for (int i = 0; i < window_count; i++)
-                if (window_is_live_panel(i))
+                repaint[i] = window_is_live_panel(i);
+
+            for (int i = 0; i < window_count; i++) {
+                if (!repaint[i])
+                    continue;
+
+                for (int j = i + 1; j < window_count; j++) {
+                    if (!windows[j].visible)
+                        continue;
+                    if (rects_overlap(windows[i].x, windows[i].y,
+                                      windows[i].w, windows[i].h,
+                                      windows[j].x, windows[j].y,
+                                      windows[j].w, windows[j].h))
+                        repaint[j] = true;
+                }
+            }
+
+            for (int i = 0; i < window_count; i++)
+                if (repaint[i])
                     paint_window(i);
 
             draw_taskbar();
@@ -5190,7 +5222,7 @@ void gui_run(void)
             if (had_cursor)
                 fb_copy_rect(cx, cy, cw, ch);
             for (int i = 0; i < window_count; i++)
-                if (window_is_live_panel(i))
+                if (repaint[i])
                     fb_copy_rect(windows[i].x, windows[i].y,
                                  windows[i].w, windows[i].h);
             fb_copy_rect(0, SCR_H - TASKBAR_H, SCR_W, TASKBAR_H);

@@ -54,4 +54,24 @@ static inline void io_wait(void)
     outb(0x80, 0);
 }
 
+/* Block transfers. ATA PIO moves a sector as 256 words; doing that with a
+ * loop of inw/outw works, but the string instructions are what the
+ * controller is paced for and keep the wait-for-DRQ window short. */
+static inline void insw(uint16_t port, void *addr, uint32_t count)
+{
+    __asm__ volatile ("rep insw"
+                      : "+D"(addr), "+c"(count)
+                      : "d"(port)
+                      : "memory");
+}
+
+static inline void outsw(uint16_t port, const void *addr, uint32_t count)
+{
+    const void *ptr = addr;
+    __asm__ volatile ("rep outsw"
+                      : "+S"(ptr), "+c"(count)
+                      : "d"(port)
+                      : "memory");
+}
+
 #endif /* IO_H */

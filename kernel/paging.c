@@ -198,3 +198,52 @@ void paging_map_region(uint32_t addr, uint32_t size)
 bool paging_enabled(void) { return enabled; }
 
 uint32_t paging_mapped_bytes(void) { return mapped_bytes; }
+
+uint32_t paging_pde(uint32_t index)
+{
+    if (index >= ENTRIES)
+        return 0;
+    return page_directory[index];
+}
+
+void paging_walk(uint32_t virt, page_walk_t *out)
+{
+    out->virt      = virt;
+    out->dir_index = virt >> 22;
+    out->tab_index = (virt >> 12) & 0x3FFu;
+    out->pde       = page_directory[out->dir_index];
+    out->pte       = 0;
+    out->phys      = 0;
+    out->present   = false;
+    out->large     = false;
+    out->user      = false;
+    out->writable  = false;
+
+    if (!(out->pde & PAGE_PRESENT))
+        return;
+
+    if (out->pde & PAGE_SIZE_4MB) {
+        out->large    = true;
+        out->present  = true;
+        out->user     = (out->pde & PAGE_USER) != 0;
+        out->writable = (out->pde & PAGE_WRITE) != 0;
+        out->phys     = (out->pde & ~0x3FFFFFu) | (virt & 0x3FFFFFu);
+        return;
+    }
+
+    /* Fine-grained table. Only the first 4 MB is built this way; a stale
+     * directory entry pointing elsewhere would be a bug in paging_init,
+     * not something the walk should try to chase through arbitrary memory. */
+    uint32_t table_phys = out->pde & ~0xFFFu;
+    if (table_phys != (uint32_t)first_table)
+        return;
+
+    out->pte = first_table[out->tab_index];
+    if (!(out->pte & PAGE_PRESENT))
+        return;
+
+    out->present  = true;
+    out->user     = ((out->pde & out->pte) & PAGE_USER) != 0;
+    out->writable = ((out->pde & out->pte) & PAGE_WRITE) != 0;
+    out->phys     = (out->pte & ~0xFFFu) | (virt & 0xFFFu);
+}

@@ -27,6 +27,8 @@ bool fb_init(const multiboot_info_t *mb);
 bool     fb_available(void);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
+uint32_t fb_phys_addr(void);
+uint32_t fb_nbytes(void);
 
 /* Pack 8-bit components into the framebuffer's pixel format. */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
@@ -48,6 +50,15 @@ void fb_mark_dirty(int x, int y, int w, int h);
 
 /* Copy the dirty region to the display and clear the record. */
 void fb_present(void);
+
+/* Copy one rectangle from the backbuffer to the front, without touching the
+ * dirty tracker. Used when several disjoint windows changed: presenting their
+ * bounding box would copy the wallpaper between them. */
+void fb_copy_rect(int x, int y, int w, int h);
+
+/* Drop the recorded dirty region without copying. Pair with fb_copy_rect when
+ * the caller has already pushed the pixels it cares about. */
+void fb_reset_dirty(void);
 
 /* Read a rectangle out of the backbuffer, and write one back.
  *
