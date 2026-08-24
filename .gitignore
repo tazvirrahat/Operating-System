@@ -83,3 +83,6 @@ tools/*.pyc
 
 # Working notes and presentation material, not part of the kernel
 docs/
+
+# Generated from TECHNICAL_REPORT.md with pandoc
+*.pdf
