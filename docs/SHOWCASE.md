@@ -205,6 +205,46 @@ file survives a reboot.
 
 ---
 
+## If you are asked about system calls
+
+You will probably get this one, and the honest answer is better than the
+flattering one.
+
+**Do not say the desktop runs on system calls.** It does not. Notepad, File
+Explorer, Task Manager and Kernel Lab are all kernel code running in ring 0 —
+when Notepad saves, it calls `fs_write()` directly, as a normal C function.
+`int 0x80` is invoked from exactly one file in the whole tree, `kernel/demos.c`,
+and only by the ring 3 demo programs.
+
+What is true, and worth saying:
+
+> "The kernel has a system call interface — `int 0x80`, and it's the one gate in
+> the interrupt table with a privilege level of 3, so it's the only door user
+> code can come through. There are four calls: write, exit, getpid, and one that
+> reports your current ring."
+>
+> "The desktop apps aren't using it, though. They're part of the kernel, so they
+> call its functions directly. Putting them in ring 3 would mean a process model,
+> user-space binaries and a loader, and that was outside what I scoped."
+
+That is a scope decision, clearly stated — which is a much stronger position than
+a claim that falls apart under one follow-up question.
+
+**Optional part 5 · 30s** — if you want to show it rather than describe it, the
+demo is two clicks and it is already verified on every boot:
+
+**Do:** Kernel Lab → **Ring 3: touch hardware** → run. Then **Ring 3: via
+syscall** → run.
+
+> "Same unprivileged program, two routes. The first one goes straight for a
+> hardware port — the processor refuses, and the kernel kills it and carries on.
+> The second asks the kernel to do the same work through a system call, and it
+> exits cleanly."
+
+Costs you thirty seconds. If you add it, drop part 3 — see Timing.
+
+---
+
 ## Say "I measured"
 
 Everything you quote is on screen live except the two drag figures — zero idle
