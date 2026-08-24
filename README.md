@@ -1,5 +1,7 @@
 # TazOS — a bare-metal x86 kernel
 
+**[Project demo video](https://drive.google.com/drive/folders/1CxfbHfUpsJrfrY6rPWHDBtqrZnx8SHuh?usp=sharing)**
+
 An educational operating system kernel for 32-bit x86, written from scratch in C and assembly. It demonstrates preemptive multitasking, dynamic memory management, synchronisation, hardware fault handling, virtual memory and privilege separation. Not intended for production use — built to implement the core concepts of an operating system directly on the hardware.
 
 There is no operating system underneath it. No standard library, no `printf`, no runtime. It boots via GRUB, sets up its own descriptor tables, drives the hardware through port I/O, and manages its own memory.
