@@ -1,14 +1,14 @@
-# MyOS — a bare-metal x86 kernel
+# TazOS — a bare-metal x86 kernel
 
 An educational operating system kernel for 32-bit x86, written from scratch in C and assembly. It demonstrates preemptive multitasking, dynamic memory management, synchronisation, hardware fault handling, virtual memory and privilege separation. Not intended for production use — built to implement the core concepts of an operating system directly on the hardware.
 
 There is no operating system underneath it. No standard library, no `printf`, no runtime. It boots via GRUB, sets up its own descriptor tables, drives the hardware through port I/O, and manages its own memory.
 
-![MyOS demo](docs/images/demo.gif)
+![TazOS desktop](assets/screenshots/desktop-loop.gif)
 
 *Preemptive multitasking, a race condition losing updates, and ring 3 privilege separation — recorded from the running kernel.*
 
-![ring 3 privilege separation](docs/images/02-ring3.png)
+![ring 3 privilege separation](assets/screenshots/ring3-syscall.png)
 
 *The same task, at the same privilege level. Writing to a hardware port directly gets it killed by the CPU; asking the kernel through a system call succeeds.*
 
@@ -26,9 +26,9 @@ There is no operating system underneath it. No standard library, no `printf`, no
 | **Virtual memory** | Paging with mixed 4 KB / 4 MB pages, page 0 left unmapped so null dereferences fault. |
 | **Privilege separation** | Ring 3 user tasks that can only reach the kernel through `int 0x80`. |
 | **Fault containment** | A faulting task is killed; the kernel and shell keep running. |
-| **Device drivers** | Interrupt-driven PS/2 mouse with the IntelliMouse wheel extension, CMOS real-time clock, PCI bus enumeration, and a VMware SVGA-II framebuffer driver. |
-| **Graphics and windowing** | 1920x1080 32-bit framebuffer with dirty-rectangle updates, anti-aliased text, draggable windows, a taskbar and Start menu, a terminal with scrollback, and a file manager. |
-| **Filesystem** | A flat in-memory namespace with create, read, write, append and delete, growable allocations, and per-file timestamps from the RTC. |
+| **Device drivers** | Interrupt-driven PS/2 mouse with the IntelliMouse wheel extension, CMOS real-time clock, PCI bus enumeration, ATA/IDE PIO, and a VMware SVGA-II framebuffer driver. |
+| **Graphics and windowing** | 1920x1080 32-bit framebuffer with dirty-rectangle updates, anti-aliased text, draggable windows, a taskbar and Start menu, a terminal with scrollback, a file manager, Task Manager, Notepad, and Kernel Lab. |
+| **Filesystem** | A flat namespace with create, read, write, append and delete. When an ATA disk is present, writes go through to disk and survive reboot; without one, files stay in RAM and the boot line says so. |
 
 ## Running it
 
@@ -47,13 +47,15 @@ On Windows there is a wrapper (a .cmd file, so PowerShell's execution policy doe
 
 Then type `demo` for a guided tour, or `help` for the full command list. The up and down arrows recall previous commands.
 
-The 25 commands are: `help`, `demo`, `selftest`, `spawn`, `bg`, `preempt`, `race`, `prodcons`, `fault`, `user`, `tasks`, `top`, `meminfo`, `uptime`, `date`, `echo`, `clear`, `gui`, `lspci`, `gpuinfo`, `gputest`, and the filesystem set `ls`, `cat`, `write`, `append`, `rm`, plus `wallpaper`.
+The 26 commands are: `help`, `demo`, `selftest`, `spawn`, `bg`, `preempt`, `race`, `prodcons`, `fault`, `user`, `tasks`, `top`, `meminfo`, `uptime`, `date`, `echo`, `clear`, `gui`, `lspci`, `gpuinfo`, `gputest`, `disk`, and the filesystem set `ls`, `cat`, `write`, `append`, `rm`, plus `wallpaper`.
 
 | Target | What it does |
 |---|---|
 | `make` | Build the kernel and a bootable ISO |
 | `make run` | Boot it in QEMU, serial output to the terminal |
-| `make test` | Boot headless, run the self-test, fail the build if anything fails |
+| `make test` | Boot headless with and without a disk image, run the self-test, fail the build if anything fails |
+| `make persist-test` | Two-boot QEMU check: write a file, reboot, read it back |
+| `make vmdk` | Generate the 8 MB IDE disk image VMware needs (`vmware/tazos-disk.vmdk`) |
 | `make debug` | Boot with QEMU halted, waiting for gdb on `:1234` |
 
 ## Verifying it actually works
@@ -99,19 +101,19 @@ AABBCCAABBBCCCAABBCC...            switching resumes
 
 `selftest` runs all 30 checks and reports pass/fail. `make test` runs it headless and fails the build on any failure.
 
-![self-test output](docs/images/01-selftest.png)
+![self-test output](assets/screenshots/selftest-protection.png)
 
 ## Live kernel monitor
 
 `top` reads directly from the scheduler's task list and the heap's block list, refreshing on the timer.
 
-![kernel monitor](docs/images/04-top.png)
+![kernel monitor](assets/screenshots/kernel-monitor.png)
 
 ## The desktop
 
 `gui` switches the shell into a 1920x1080 graphical desktop, drawn entirely by this kernel — no graphics library underneath, and no compositor but the one in `gui.c`.
 
-![the graphical desktop](docs/images/06-gui.png)
+![the graphical desktop](assets/screenshots/desktop.png)
 
 Windows drag by their title bar, the taskbar clock is read from the CMOS real-time clock, the terminal scrolls with the mouse wheel, and **Start → Change wallpaper** cycles the desktop gradient.
 
@@ -122,6 +124,8 @@ python3 tools/genwallpaper.py assets/wallpaper.jpg kernel/wallpaper_image.c
 ```
 
 **File Explorer** is pinned to the taskbar. It lists the filesystem with size and timestamp, and previews whatever is selected. It holds no copy of anything — every frame walks the filesystem afresh, so a file written with `write` in the terminal appears in the window without the terminal knowing the window exists.
+
+**Kernel Lab** is on the Start menu and the taskbar. It runs the same kernel experiments as the shell commands (`race`, `deadlock`, `prodcons`, and the rest) from buttons, with live panels for the scheduler, heap, PCI bus and adapter.
 
 ## How it works
 
@@ -139,7 +143,7 @@ python3 tools/genwallpaper.py assets/wallpaper.jpg kernel/wallpaper_image.c
 
 **Graphics.** GRUB is asked for a linear framebuffer in the multiboot header and reports back its address, pitch and depth. Drawing goes to a back buffer in the heap and only the changed rectangle is copied forward, because copying all 8.3 MB of a 1920x1080 frame on every mouse movement is what turns a window manager into a slideshow. Text is anti-aliased from greyscale coverage atlases baked at build time, so the font is real glyph shapes rather than a bitmap grid.
 
-**Filesystem.** Names map to heap allocations that grow by doubling when appended to. There is no disk under it, which the header says outright; what is above the block layer — the namespace, the allocation and release of file storage, the metadata — is the part that is actually a filesystem, and it is all here.
+**Filesystem.** Names map to heap allocations that grow by doubling when appended to. If an ATA disk answered IDENTIFY, every write is flushed to a fixed on-disk table so the same files come back after a reboot. If none did, the namespace stays in RAM and the boot line says storage is volatile.
 
 ## Deliberately not built
 
@@ -149,7 +153,6 @@ Naming what was left out, and why, is part of the design:
 |---|---|
 | **Custom bootloader** | GRUB handles it. Writing one teaches legacy BIOS trivia, not OS concepts. |
 | **64-bit long mode** | Requires paging before any output is possible, which forces the hardest component first for no conceptual gain. |
-| **Persistent storage** | The filesystem that exists keeps its files in the heap. Putting them on a disk means an ATA or AHCI driver and then a partition table and an on-disk format on top — a block layer, not a filesystem concept, and none of it changes what the namespace above it does. |
 | **USB input** | The mouse and keyboard are PS/2, which every virtual machine emulates. Real hardware without a PS/2 controller would need a USB host stack, and that is a project rather than a feature. |
 | **Web browser** | Needs, in order: USB stack, network driver, TCP/IP (~40k lines), TLS (~100k lines), HTTP, then HTML/CSS/JS engines. The dependency chain is the obstacle, not the rendering. |
 | **SMP** | Requires APIC, per-core stacks and locking throughout. |
@@ -159,7 +162,6 @@ Naming what was left out, and why, is part of the design:
 - **Memory is not isolated between ring 0 and ring 3.** The whole first 4 MB is marked user-accessible, so a ring 3 task could read kernel memory. What *is* enforced is instruction privilege: user code cannot perform port I/O or execute privileged instructions. Separating them properly would mean giving user code its own linker section on its own pages.
 - **Syscall arguments are not validated.** `SYS_WRITE` dereferences a user-supplied pointer without checking it.
 - **The scheduler is round-robin only** — no priorities, no aging, no blocking wait queues (`sem_wait` yields in a loop rather than sleeping).
-- **Files do not survive a reboot.** They live in the heap; see the note on persistent storage above.
 - **The race-variance self-test is statistical** and could in principle flake, since how many updates are lost depends on where preemption lands.
 
 ## Project structure
@@ -183,6 +185,7 @@ kernel/
   mouse.c       PS/2 mouse, IntelliMouse wheel extension
   rtc.c         CMOS real-time clock
   pci.c         PCI bus enumeration
+  ata.c         ATA/IDE PIO (primary, 28-bit LBA)
   svga.c        VMware SVGA-II framebuffer and command FIFO
   svga3d.c      the adapter's 3D pipeline, when it exposes one
   paging.c      page directory, MMU enable
@@ -194,10 +197,10 @@ kernel/
   fb.c          framebuffer drawing, anti-aliased text, dirty rectangles
   fbcon.c       text console on the framebuffer
   font_atlas.c  generated glyph coverage atlases
-  gui.c         window manager, taskbar, Start menu, terminal, file manager
+  gui.c         window manager, taskbar, Start menu, terminal, file manager, Kernel Lab
   wallpaper.c   the desktop picture and gradients
   wallpaper_image.c  generated palette and pixels
-  fs.c          the in-memory filesystem
+  fs.c          the filesystem (RAM, or write-through to ATA)
   shell.c       interactive command loop
   monitor.c     live kernel display
   demos.c       the demonstrations
@@ -225,6 +228,6 @@ There is **no virtual disk attached**, so the guest has no writable storage — 
 
 The kernel probes for a serial port at startup and skips serial output if none answers, so it boots correctly whether or not one is configured. Verified both ways under QEMU: 30 self-tests pass with a serial port and with `-serial none`.
 
-**Confirmed working in VMware Workstation Pro** — all 30 self-tests pass, including ring 3 privilege separation and paging. Full boot transcript: [`docs/vmware-boot-log.txt`](docs/vmware-boot-log.txt).
+**Confirmed working in VMware Workstation Pro** — all 30 self-tests pass, including ring 3 privilege separation and paging.
 
 Worth noting what this checks that an emulator does not: VMware runs guest instructions on the real CPU through hardware virtualisation rather than interpreting them. The descriptor tables, paging structures and privilege transitions are being consumed by actual silicon.
