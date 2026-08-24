@@ -205,6 +205,49 @@ file survives a reboot.
 
 ---
 
+## Showing that apps call down into the kernel
+
+This is the layering question, and it is a different one from privilege rings.
+Notepad does not write to the disk. It does not allocate memory. It asks the
+kernel, and the kernel's layers do the work:
+
+```
+notepad_save()          the app
+  -> fs_write()         filesystem: names, sizes, timestamps
+    -> kmalloc()        heap: finds room for the contents
+    -> ata_write()      driver: LBA addressing, ATA command
+      -> outsw()        the actual port I/O to the drive
+```
+
+You can prove the whole chain with one counter, because `ata_write` increments a
+sector count that nothing else touches.
+
+**Do:** in the Terminal, type `disk`. Note the **writes** figure.
+
+**Do:** in Notepad, type something, name it `hello.txt`, press **Save**.
+
+**Do:** back in the Terminal, `disk` again.
+
+> "Before I saved, the driver had written two thousand three hundred and
+> fifty-eight sectors. I press Save in Notepad — and now it's ten more, and the
+> file count has gone up by one."
+>
+> "Notepad didn't do any of that. It called the filesystem, the filesystem asked
+> the heap for room and handed the bytes to the disk driver, and the driver did
+> the port I/O. Four layers, and you can watch the bottom one move."
+
+Measured on this build with a disk attached: 2358 sectors before, 2368 after,
+five files becoming six.
+
+**Costs about 25 seconds.** If you add it, it is a better close than part 4's
+last paragraph — drop that and finish here.
+
+If the guest has no disk, `disk` reports none and the counter does not exist. The
+heap half of the chain still works: `meminfo` before and after a large save shows
+the allocation. Do not claim sectors you cannot show.
+
+---
+
 ## If you are asked about system calls
 
 You will probably get this one, and the honest answer is better than the
