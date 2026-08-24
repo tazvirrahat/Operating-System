@@ -12,6 +12,7 @@
 #include "rtc.h"
 #include "wallpaper.h"
 #include "fs.h"
+#include "syscall.h"
 #include "demos.h"
 #include "pci.h"
 #include "svga.h"
@@ -1435,6 +1436,22 @@ static bool np_commit_rename(void)
     return true;
 }
 
+/* Ask the kernel to write a file, through the gate.
+ *
+ * eax carries the call number, ebx/ecx/edx the arguments, and eax comes back
+ * with the result -- the same convention the ring 3 demo programs use. */
+static bool sys_write_file(const char *name, const void *data, uint32_t len)
+{
+    uint32_t ret;
+
+    __asm__ volatile ("int $0x80"
+                      : "=a"(ret)
+                      : "a"(SYS_WRITE_FILE), "b"(name), "c"(data), "d"(len)
+                      : "memory");
+
+    return ret != 0;
+}
+
 static void notepad_save(void)
 {
     if (np_naming && !np_commit_rename())
@@ -1443,7 +1460,15 @@ static void notepad_save(void)
     if (!np_name[0])
         strcpy(np_name, "untitled.txt");
 
-    if (!fs_write(np_name, np_text, (uint32_t)np_len)) {
+    /* Save goes through the system call gate rather than calling fs_write()
+     * directly.
+     *
+     * Notepad is kernel code and could call the filesystem straight -- nothing
+     * would stop it. Trapping instead means the save really does leave the
+     * caller, enter the kernel through int 0x80, and reach the filesystem from
+     * the dispatcher, which is what the syscall counter in Task Manager is
+     * counting. */
+    if (!sys_write_file(np_name, np_text, (uint32_t)np_len)) {
         const char *e = fs_error();
         if (e && e[0]) {
             const char *pre = "save failed: ";

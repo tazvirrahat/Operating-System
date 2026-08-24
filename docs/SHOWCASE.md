@@ -248,43 +248,49 @@ the allocation. Do not claim sectors you cannot show.
 
 ---
 
-## If you are asked about system calls
+## Part 5 — System calls · 30s
 
-You will probably get this one, and the honest answer is better than the
-flattering one.
+Notepad's **Save** goes through the system call gate. It does not call the
+filesystem directly — it puts the call number in `eax`, the filename and bytes
+in `ebx`/`ecx`/`edx`, and executes `int 0x80`. The kernel takes the interrupt,
+lands in the dispatcher, and reaches the filesystem from there.
 
-**Do not say the desktop runs on system calls.** It does not. Notepad, File
-Explorer, Task Manager and Kernel Lab are all kernel code running in ring 0 —
-when Notepad saves, it calls `fs_write()` directly, as a normal C function.
-`int 0x80` is invoked from exactly one file in the whole tree, `kernel/demos.c`,
-and only by the ring 3 demo programs.
+The kernel counts every system call it services, so you can prove the trap
+happened rather than assert it.
 
-What is true, and worth saying:
+**Do:** in the Terminal, type `syscalls`. Note the number.
 
-> "The kernel has a system call interface — `int 0x80`, and it's the one gate in
-> the interrupt table with a privilege level of 3, so it's the only door user
-> code can come through. There are four calls: write, exit, getpid, and one that
-> reports your current ring."
+**Do:** in Notepad, type something and press **Save**.
+
+**Do:** back in the Terminal, `syscalls` again.
+
+> "Notepad is about to save a file. Before it does, the kernel has serviced
+> seven system calls."
 >
-> "The desktop apps aren't using it, though. They're part of the kernel, so they
-> call its functions directly. Putting them in ring 3 would mean a process model,
-> user-space binaries and a loader, and that was outside what I scoped."
+> "I press Save — and now it's eight. That save didn't call the filesystem
+> directly. It put the call number in a register and executed `int 0x80`, the
+> processor took the interrupt, and the kernel did the write on Notepad's
+> behalf."
 
-That is a scope decision, clearly stated — which is a much stronger position than
-a claim that falls apart under one follow-up question.
+**Optional, if there is time —** the privilege side, two clicks in Kernel Lab:
+**Ring 3: touch hardware** then **Ring 3: via syscall**.
 
-**Optional part 5 · 30s** — if you want to show it rather than describe it, the
-demo is two clicks and it is already verified on every boot:
+> "And here's why that gate exists. Same unprivileged program, two routes. The
+> first goes straight for a hardware port and the processor kills it. The second
+> asks through the gate, and it works."
 
-**Do:** Kernel Lab → **Ring 3: touch hardware** → run. Then **Ring 3: via
-syscall** → run.
+Measured on this build: counter 7 before the save, 8 after, and the file appears
+in `ls` with the right size and timestamp.
 
-> "Same unprivileged program, two routes. The first one goes straight for a
-> hardware port — the processor refuses, and the kernel kills it and carries on.
-> The second asks the kernel to do the same work through a system call, and it
-> exits cleanly."
+**Be precise about the scope.** Only the save is routed this way. The rest of the
+desktop is kernel code calling kernel functions directly, and if you are asked,
+say so:
 
-Costs you thirty seconds. If you add it, drop part 3 — see Timing.
+> "One service is routed through the gate, not the whole desktop. These apps are
+> part of the kernel — making all of them user programs would need a process
+> model, user-space binaries and a loader, which I scoped out."
+
+**Costs 30 seconds.** If you add it, drop part 3 — see Timing.
 
 ---
 

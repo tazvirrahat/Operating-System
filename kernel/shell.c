@@ -16,6 +16,7 @@
 #include "fb.h"
 #include "ata.h"
 #include "fs.h"
+#include "syscall.h"
 #include "rtc.h"
 #include "wallpaper.h"
 #include "paging.h"
@@ -820,6 +821,12 @@ static void cmd_rm(int argc, char **argv)
         kprintf("rm: %s: no such file\n", argv[1]);
 }
 
+static void cmd_syscalls(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    kprintf("system calls serviced since boot: %u\n", syscall_count());
+}
+
 static void cmd_disk(int argc, char **argv)
 {
     (void)argc;
@@ -984,6 +991,7 @@ static const command_t commands[] = {
     { "write",    "write <f> <text>", "replace a file's contents",                 cmd_write    },
     { "append",   "append <f> <txt>", "add to a file",                             cmd_append   },
     { "rm",       "rm <file>",        "delete a file",                             cmd_rm       },
+    { "syscalls", "syscalls",         "how many system calls the kernel has serviced", cmd_syscalls },
     { "disk",     "disk",             "ATA drive, filesystem state, writes",       cmd_disk     },
     { "wallpaper","wallpaper [1-6]",  "change the desktop background",             cmd_wallpaper},
     { "date",     "date",             "wall-clock time from the cmos chip",        cmd_date     },

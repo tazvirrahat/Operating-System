@@ -4,14 +4,21 @@
 #include "gdt.h"
 #include "task.h"
 #include "console.h"
+#include "fs.h"
 
 /* Selectors with the requested privilege level (low two bits) set to 3.
  * The RPL must match or the CPU rejects the transition. */
 #define USER_CODE_SELECTOR (GDT_USER_CODE | 3)   /* 0x1B */
 #define USER_DATA_SELECTOR (GDT_USER_DATA | 3)   /* 0x23 */
 
+static uint32_t calls_serviced;
+
+uint32_t syscall_count(void) { return calls_serviced; }
+
 static void syscall_dispatch(registers_t *regs)
 {
+    calls_serviced++;
+
     switch (regs->eax) {
     case SYS_WRITE: {
         const char *s = (const char *)regs->ebx;
@@ -37,6 +44,23 @@ static void syscall_dispatch(registers_t *regs)
     case SYS_GETPID: {
         task_t *t = task_current();
         regs->eax = t ? (uint32_t)t->id : 0;
+        break;
+    }
+
+    case SYS_WRITE_FILE: {
+        /* The one service the desktop actually asks for through the gate.
+         *
+         * Notepad could call fs_write() directly -- it is kernel code and
+         * nothing stops it. Routing Save through int 0x80 instead means the
+         * save genuinely traps: the CPU takes the interrupt, lands in this
+         * dispatcher, and the filesystem is reached from here. That is what
+         * makes "saving goes through a system call" a statement about the
+         * code rather than about the diagram. */
+        const char *name = (const char *)regs->ebx;
+        const void *data = (const void *)regs->ecx;
+        uint32_t    len  = regs->edx;
+
+        regs->eax = (name && fs_write(name, data, len)) ? 1u : 0u;
         break;
     }
 

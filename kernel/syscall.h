@@ -19,6 +19,12 @@
 #define SYS_EXIT    2   /* terminate the calling task            -> never returns */
 #define SYS_GETPID  3   /*                                       -> task id */
 #define SYS_GETCS   4   /*                                       -> current CS, ring in low 2 bits */
+#define SYS_WRITE_FILE 5 /* ebx = name, ecx = bytes, edx = length -> 1 ok, 0 failed */
+
+/* How many system calls have been serviced since boot. Exposed so the
+ * desktop can show that a save really did trap into the kernel rather
+ * than calling the filesystem behind its back. */
+uint32_t syscall_count(void);
 
 void syscall_init(void);
 
