@@ -64,7 +64,7 @@
 
 **Action** — I routed the drag through the adapter's block-copy command, keeping the software back buffer synchronised because every later partial repaint reads from it. I then treated the change as a hypothesis rather than an improvement and measured it: the same build, the same adapter and the same ten-second drag, run with the feature enabled and disabled. The accelerated version was consistently slower — thirty-three per cent idle without it against twenty-seven to thirty with it. Investigating why, I found two reasons the trade does not pay under emulation. The emulator performs the block copy on the host processor, so no work is genuinely offloaded. And the command queue runs asynchronously, so before the processor may write the uncovered strips into video memory it must wait for the adapter to finish reading the region it is moving; discovering that requires polling a hardware register over an I/O port, which costs a virtual-machine exit on every read, once per frame. I kept the implementation but disabled it by default, recording the measurement in a comment beside the flag.
 
-**Result** — Performance stayed at the better figure. The decision is documented with the numbers that produced it, so it can be re-tested on hardware where the copy is genuinely offloaded.
+**Result** — Idle stayed at thirty-three per cent rather than dropping to twenty-seven, so disabling the feature preserved a six-point margin. The measurement is recorded beside the flag, so the decision can be re-tested on hardware where the copy is genuinely offloaded rather than assumed from this one.
 
 ---
 
