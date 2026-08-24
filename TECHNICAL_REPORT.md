@@ -9,7 +9,7 @@
 >
 > **Note on §3.** The challenges below are real: every one was encountered while building this kernel, and each is traceable to the commit that fixed it. Before submitting, read through them and make sure you can explain each fix in your own words — a marker is entitled to ask, and these are the parts of the project most worth understanding.
 >
-> **[`CHALLENGES.md`](CHALLENGES.md)** contains the same challenges as a standalone document using only the four STAR headings, which is the format the course brief asks for. If both are submitted, keep them in step — §3 here and the numbered sections there describe the same fourteen problems.
+> **Section 3 is the challenges section the course brief asks for.** Every challenge is written using the four STAR headings and nothing else: Situation (what the challenge was), Task (what we were doing previously), Action (what we did about it), Result (the outcome). This is the single document — there is no separate challenges file to keep in step.
 
 ---
 
@@ -546,15 +546,6 @@ The scope is stated rather than blurred. One service is routed through the gate,
 **Result.** Both fixed, and the same pass confirmed the parts that did work: ending one worker leaves the other two climbing, the processor hog now runs its full ten seconds, and the preemption demonstration reports forty forced switches in the window against forty-one measured from the shell.
 
 The lesson is the cheapest one in the project and the easiest to skip: a demonstration script is code, and reading it is not testing it.
-
----
-
-### 3.31 *(Add anything else you hit)*
-
-**Situation.**
-**Task.**
-**Action.**
-**Result.**
 
 ---
 
