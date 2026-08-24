@@ -1,145 +1,14 @@
-# Bare-Metal x86 Operating System — Technical Report
+# Technical Report — Challenges Faced
 
-**Course:** Operating Systems
-**Submitted:** *(date)*
-**Authors:** *(names)*
+**Project:** TazOS, a bare-metal x86 operating system kernel  
+**Course:** Operating Systems  
+**Submitted:** *(date)*  
+**Authors:** *(names)*  
 **Repository:** *(URL)*
 
-> **Companion document:** [`PROJECT_PLAN.md`](PROJECT_PLAN.md) — the development plan. This document is the report: what was built, what went wrong, and what was done about it.
->
-> **Note on §3.** The challenges below are real: every one was encountered while building this kernel, and each is traceable to the commit that fixed it. Before submitting, read through them and make sure you can explain each fix in your own words — a marker is entitled to ask, and these are the parts of the project most worth understanding.
->
-> **Section 3 is the challenges section the course brief asks for.** Every challenge is written using the four STAR headings and nothing else: Situation (what the challenge was), Task (what we were doing previously), Action (what we did about it), Result (the outcome). This is the single document — there is no separate challenges file to keep in step.
-
 ---
 
-## 1. Project overview
-
-We implemented a bare-metal operating system kernel for 32-bit x86, developed under QEMU and booted by GRUB using the Multiboot standard. The kernel runs with no underlying operating system, no standard library and no runtime support: it establishes its own stack, installs its own descriptor tables, drives hardware through port I/O and memory-mapped registers, and manages its own memory.
-
-The system demonstrates the core concerns of an operating system:
-
-- **Preemptive multitasking** — a round-robin scheduler driven by the programmable interval timer, switching tasks that never yield voluntarily
-- **Dynamic memory management** — a first-fit heap allocator with block splitting, coalescing and corruption detection
-- **Synchronisation** — spinlock, mutex and counting semaphore, with a race condition demonstrated failing before it is fixed, and a bounded-buffer producer/consumer where both sides block rather than poll
-- **Interrupt-driven device I/O** — a PS/2 keyboard driver decoding raw scancodes into a ring buffer
-- **Fault handling** — CPU exceptions caught, diagnosed and contained, killing the offending task while the kernel survives
-- **Virtual memory** — paging with mixed page sizes, page 0 deliberately unmapped so that null dereferences fault
-- **Privilege separation** — user tasks in ring 3 whose only route into the kernel is a single system call gate
-
-Interaction is through a shell rendered in VGA text mode, with a live kernel monitor and a `selftest` command running 21 automated checks.
-
-Roughly 9,250 hand-written lines across 66 files, plus a generated 3,450-line font atlas.
-
-### 1.1 Architecture decision
-
-The project initially targeted ARMv6 on an emulated Raspberry Pi and was changed to x86 before implementation began. In summary: first screen output reduces from roughly forty lines of UART initialisation to a single memory write; keyboard input becomes feasible at all (PS/2 rather than a USB host stack of some ten thousand lines); tutorial coverage is far denser; and the result can be booted on the team's own hardware.
-
-The usual objection to x86 — the boot sector, real mode and mode-switching sequence — does not apply when using GRUB, which hands over a CPU already in 32-bit protected mode. The entire legacy boot problem is delegated to code we did not have to write.
-
-We targeted 32-bit protected mode rather than 64-bit long mode because long mode requires paging to be configured *before* any output is possible, which forces the hardest component to be solved first, blind.
-
-### 1.2 Scope and deliberate exclusions
-
-Excluded by design: custom bootloader, 64-bit long mode, filesystem, GUI/windowing, web browser and SMP. Rationale for each is in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §3 and summarised in the README.
-
-The browser exclusion is worth stating explicitly because it was asked about directly. A browser requires, in order: a USB host stack, a network driver, a TCP/IP implementation (lwIP, a deliberately minimal one, is around 40,000 lines), a TLS implementation (mbedTLS is around 100,000), an HTTP client, and only then HTML, CSS and JavaScript engines. The dependency chain is the obstacle, not the rendering. Recognising that is the useful part.
-
-### 1.3 Known limitations
-
-Stated here rather than left to be discovered:
-
-- **Memory is not isolated between ring 0 and ring 3.** The whole first 4 MB is marked user-accessible, so a ring 3 task could read kernel memory. What *is* enforced is instruction privilege — user code cannot perform port I/O or execute privileged instructions, and the CPU kills it for trying. Proper isolation would require giving user code its own linker section on its own pages.
-- **System call arguments are not validated.** `SYS_WRITE` dereferences a user-supplied pointer without checking it.
-- **The scheduler is round-robin only** — no priorities, no aging. `sem_wait` yields in a loop rather than sleeping on a wait queue.
-- **The race-variance self-test is statistical** and could in principle flake, since how many updates are lost depends on where preemption happens to land.
-
----
-
-## 2. System architecture
-
-### 2.1 Boot sequence
-
-GRUB locates a multiboot header within the first 8 KB of the kernel image, loads the kernel at physical address `0x100000` with the CPU already in 32-bit protected mode, and jumps to `_start`. That stub sets the stack pointer, pushes the multiboot magic and info pointer, and calls `kmain`.
-
-Subsystems then come up in dependency order, chosen so that each is diagnosable using the ones before it:
-
-```
-console (VGA + serial)   output first: nothing after this is debuggable without it
-  -> gdt                 our own segments, replacing GRUB's temporary ones
-  -> isr / idt           from here a fault prints a diagnostic instead of resetting
-  -> pic                 remap IRQs off the exception vectors
-  -> pit                 100 Hz heartbeat
-  -> keyboard            interrupt-driven input
-  -> paging              MMU on; needs the IDT so page faults have somewhere to land
-  -> heap                needs mapped memory
-  -> tasks + syscalls    need the heap for stacks
-  -> selftest -> shell
-```
-
-### 2.2 Components implemented
-
-| Component | File(s) | Notes |
-|---|---|---|
-| Multiboot header, entry | `boot.asm` | Stack setup, BSS handled by linker |
-| Memory layout | `linker.ld` | Places `.multiboot` first; discards build-id and `.eh_frame` |
-| VGA text driver | `vga.c` | `0xB8000`, scrolling, colour, hardware cursor |
-| Serial driver | `serial.c` | COM1, polled; survives crash-reboot |
-| Console | `console.c` | `kprintf` with width/alignment/fill, `panic` |
-| GDT + TSS | `gdt.c` | 6 descriptors, ring 0 and ring 3, TSS for stack switching |
-| IDT | `idt.c` | 256 entries; unused vectors marked not-present |
-| Interrupt dispatch | `isr.asm`, `isr.c` | Uniform frames, separate error-code stubs |
-| PIC | `pic.c` | Remapped to vectors 32–47 |
-| Timer | `pit.c` | 100 Hz; exposes a callback rather than calling the scheduler |
-| Keyboard | `keyboard.c` | Scancode set 1, make/break, shift, caps, ring buffer |
-| Paging | `paging.c` | 4 KB pages for the first 4 MB, 4 MB pages above; page 0 unmapped |
-| Heap | `heap.c` | First-fit, splitting, coalescing, magic headers |
-| Context switch | `context.asm` | Callee-saved registers plus eflags, `esp` swap |
-| Scheduler | `task.c` | Round-robin, preemptive, stack guard words, reaping |
-| Synchronisation | `sync.c` | Spinlock, mutex, semaphore, atomic `xchg` |
-| System calls | `syscall.c` | `int 0x80`, DPL 3 gate, ring 3 entry via `iret` |
-| Mouse | `mouse.c` | PS/2, IRQ 12, packet resynchronisation, IntelliMouse wheel extension |
-| Real-time clock | `rtc.c` | CMOS, BCD and 12-hour handling, reads twice to avoid a mid-update value |
-| PCI | `pci.c` | Configuration-space enumeration over ports `0xCF8`/`0xCFC` |
-| Graphics adapter | `svga.c`, `svga3d.c` | VMware SVGA-II registers and command FIFO; 3D pipeline when exposed |
-| Framebuffer | `fb.c` | 32-bit drawing, alpha blending, rounded rectangles, shadows, dirty rectangles |
-| Anti-aliased text | `font_atlas.c`, `fbcon.c` | Greyscale coverage atlases baked at build time from a TrueType face |
-| Window manager | `gui.c` | Draggable windows, taskbar, Start menu, terminal with 400-line scrollback, file manager with preview, Kernel Lab with clickable kernel experiments and live panels |
-| Wallpaper | `wallpaper.c` | An embedded palettised picture, plus five generated gradients |
-| Filesystem | `fs.c` | Flat namespace, growable heap-backed files, RTC timestamps |
-| Shell | `shell.c` | 25 commands, tokeniser, dispatch table, 16-entry command history |
-| Utilities | `string.c` | `memset`/`memcpy`/`strcmp`/`strtoul`; gcc emits calls to some of these regardless of `-fno-builtin` |
-| Monitor | `monitor.c` | Live task/heap/IRQ display |
-| Demos, self-test | `demos.c`, `selftest.c` | Shared by the shell and the automated checks |
-
-### 2.3 Key design decisions
-
-**GRUB and Multiboot over a custom bootloader.** Delegates the legacy boot sequence entirely. What is learned by writing a boot sector is BIOS trivia, not operating-system concepts.
-
-**Dependency inversion at two boundaries.** The PIT exposes `pit_on_tick(callback)` rather than calling the scheduler directly, and the keyboard fills a ring buffer without knowing who drains it. Both keep the lower layer testable on its own and prevent the scheduler and shell from becoming load-bearing for device drivers.
-
-**Two output channels behind one interface.** Every module calls `kprintf`; the console decides that output goes to both VGA and serial. Serial output is what survives a crash-reboot, and QEMU can log it to a file — which is what makes post-mortem debugging possible at all when the machine resets.
-
-**Mixed page sizes.** 4 MB pages above the first 4 MB need no second level at all. The first 4 MB uses 4 KB granularity purely so that a *single* page at address zero can be left unmapped; a 4 MB page there would force a choice between mapping the kernel (which lives at 1 MB) and trapping null dereferences.
-
-**Demos shared between the shell and the self-test.** A demonstration a human watches and an assertion a machine checks should not be two implementations that can drift apart.
-
----
-
-## 3. Challenges encountered (STAR format)
-
-Each challenge is documented as:
-
-- **Situation** — what the challenge was
-- **Task** — the approach in place before the problem appeared
-- **Action** — what was done to address it
-- **Result** — the outcome
-
-A recurring theme runs through these and is worth stating up front: **on bare metal, "it compiled" carries almost no information about correctness.** There is no runtime, no loader and no operating system to catch anything, so the layout of the binary, the ordering of hardware operations, and what the optimiser decided to do with your code are all part of the program's correctness.
-
----
-
-### 3.1 GRUB refused to load the kernel: header one byte out of range
+## 1. GRUB refused to load the kernel: header one byte out of range
 
 **Situation.** The kernel compiled and linked cleanly, but GRUB rejected it with `no multiboot header found`. The header struct was plainly present in the source and the magic constant was correct, so the error gave no indication of what was actually wrong.
 
@@ -153,7 +22,7 @@ The cause was a section we had not written: the linker was placing `.note.gnu.bu
 
 ---
 
-### 3.2 Two source files silently overwriting each other's object file
+## 2. Two source files silently overwriting each other's object file
 
 **Situation.** After adding interrupt handling, the link failed with `undefined reference to isr_handler` — for a function that plainly existed and had compiled without error. Simultaneously it reported `multiple definition of irq15`, pointing at the same file as both the duplicate and the original.
 
@@ -165,7 +34,7 @@ The cause was a section we had not written: the linker was placing `.note.gnu.bu
 
 ---
 
-### 3.3 Acknowledging an interrupt after a handler that never returns
+## 3. Acknowledging an interrupt after a handler that never returns
 
 **Situation.** Anticipated rather than observed. While writing the scheduler it became clear that the timer would stop firing permanently on the first switch to a newly created task.
 
@@ -177,7 +46,7 @@ The cause was a section we had not written: the linker was placing `.note.gnu.bu
 
 ---
 
-### 3.4 Format specifiers printed literally, corrupting every argument after them
+## 4. Format specifiers printed literally, corrupting every argument after them
 
 **Situation.** The per-task CPU time table rendered as `%-10s id=1089572 state=%-8s ticks=1`, with the format specifiers appearing verbatim and the task IDs showing implausible values.
 
@@ -189,7 +58,7 @@ The cause was a section we had not written: the linker was placing `.note.gnu.bu
 
 ---
 
-### 3.5 The race condition demo produced the correct answer
+## 5. The race condition demo produced the correct answer
 
 **Situation.** The self-test asserted that two tasks incrementing a shared counter without a lock would lose updates. Every run returned exactly the expected total, so the demonstration proved nothing.
 
@@ -203,7 +72,7 @@ We tied the width of the window to the same clock that drives preemption instead
 
 ---
 
-### 3.6 The same demo then became *too* reliable
+## 6. The same demo then became *too* reliable
 
 **Situation.** Having made the race fire, the total pinned to exactly half the expected value on every run. The self-test's separate assertion that results vary between runs began failing, on roughly one boot in three.
 
@@ -217,7 +86,7 @@ The window was narrowed to a randomised span of up to a quarter of a tick's work
 
 ---
 
-### 3.7 A stale object file compiled against an old constant
+## 7. A stale object file compiled against an old constant
 
 **Situation.** After reducing a constant in `demos.h` from 8000 to 100, the self-test continued printing `expected 8000` while the demo itself used the new value. Source and binary disagreed with no warning from anywhere.
 
@@ -229,7 +98,7 @@ The window was narrowed to a randomised span of up to a quarter of a tick's work
 
 ---
 
-### 3.8 The compiler deleted a deliberate divide-by-zero
+## 8. The compiler deleted a deliberate divide-by-zero
 
 **Situation.** The `fault div0` command reported `still alive - the fault did not fire`. No exception was raised, and the task ran to completion.
 
@@ -243,7 +112,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.9 Ring 3 faulted on its first instruction: permissions are an AND across levels
+## 9. Ring 3 faulted on its first instruction: permissions are an AND across levels
 
 **Situation.** The transition into user mode succeeded — the saved `CS` read `0x1B`, confirming ring 3 — but the very first instruction fetch raised a page fault with error code 5: present, read, user mode. A protection violation rather than a missing page.
 
@@ -255,7 +124,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.10 Every system call reported as an unknown exception
+## 10. Every system call reported as an unknown exception
 
 **Situation.** With ring 3 running, `int 0x80` reached the kernel but was reported as `CPU EXCEPTION 128: unknown`, and the calling task was killed as though it had faulted.
 
@@ -267,7 +136,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.11 The monitor scrolled instead of redrawing
+## 11. The monitor scrolled instead of redrawing
 
 **Situation.** The live `top` display was intended to refresh in place. On screen it printed `[H` literally and scrolled, stacking successive frames down the display.
 
@@ -279,7 +148,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.12 A demo that overstated its own evidence
+## 12. A demo that overstated its own evidence
 
 **Situation.** The `race` command printed "totals differ from each other and from the expected value" whenever any run was incorrect — including runs where all three totals were identical, which a screenshot captured plainly.
 
@@ -291,7 +160,7 @@ The instruction was written directly in inline assembly, leaving the compiler no
 
 ---
 
-### 3.13 A synchronisation demo revealed the console was itself unsynchronised
+## 13. A synchronisation demo revealed the console was itself unsynchronised
 
 **Situation.** The newly added producer/consumer demonstration printed a marker per item. Its output came out as `c14 cP16 P17 P18 15` — one task's `c15` had been split down the middle, with another task's three markers wedged inside it.
 
@@ -307,7 +176,7 @@ Two things make this worth recording. First, the bug was found by a feature rath
 
 ---
 
-### 3.14 A polling loop that could hang the kernel outside the emulator
+## 14. A polling loop that could hang the kernel outside the emulator
 
 **Situation.** Preparing to run the kernel in VMware rather than only in QEMU, we reviewed the code for assumptions that hold in an emulator but not elsewhere. The serial driver waited in an unbounded loop for the UART to report its transmit register free.
 
@@ -323,7 +192,7 @@ The method is worth noting as much as the fix. Rather than testing the same conf
 
 ---
 
-### 3.15 Toolchain and workflow
+## 15. Toolchain and workflow
 
 **Situation.** The project began with no command-line experience on the team: no terminal use, no compiling from a shell, no Git CLI, and no debugger. Bare-metal development requires all of these and provides none of the feedback an IDE gives.
 
@@ -335,7 +204,7 @@ The method is worth noting as much as the fix. Rather than testing the same conf
 
 ---
 
-### 3.16 A window manager that redrew eight megabytes to move a mouse
+## 16. A window manager that redrew eight megabytes to move a mouse
 
 **Situation.** The first working desktop was unusable. The pointer lagged several centimetres behind the mouse, and typing produced characters a visible moment after the key.
 
@@ -349,7 +218,7 @@ Two changes fixed it. The scene is now rebuilt only when something in it actuall
 
 ---
 
-### 3.17 A cursor that flickered because the frame was correct twice
+## 17. A cursor that flickered because the frame was correct twice
 
 **Situation.** With the redraw fixed, the pointer left a faint flicker along its path.
 
@@ -363,7 +232,7 @@ The fix was to remove work rather than add it: erase, redraw, and present once, 
 
 ---
 
-### 3.18 A command that appeared to hang, and one that appeared to do nothing
+## 18. A command that appeared to hang, and one that appeared to do nothing
 
 **Situation.** Two complaints about the graphical terminal arrived together: typing `demo` froze the window until the demonstration finished, and at the very first prompt the characters being typed did not appear at all.
 
@@ -377,7 +246,7 @@ The invisible typing was the same mechanism inverted: the framebuffer console on
 
 ---
 
-### 3.19 A performance fix that broke the keyboard
+## 19. A performance fix that broke the keyboard
 
 **Situation.** Immediately after splitting the redraw into `scene_dirty` and `dirty`, the keyboard became laggy. A keystroke appeared only when the mouse was moved or the clock ticked.
 
@@ -389,7 +258,7 @@ The invisible typing was the same mechanism inverted: the framebuffer console on
 
 ---
 
-### 3.20 A mouse with no scroll wheel
+## 20. A mouse with no scroll wheel
 
 **Situation.** Scrolling the terminal with the mouse wheel did nothing, although scrolling by keyboard worked.
 
@@ -403,7 +272,7 @@ The driver performs the knock, asks for the device ID, and sets its packet size 
 
 ---
 
-### 3.21 A filesystem whose every allocation returned null
+## 21. A filesystem whose every allocation returned null
 
 **Situation.** The filesystem was added and immediately failed. No file could be created, and the two pre-seeded files were absent.
 
@@ -417,7 +286,7 @@ The initialisation order in `kmain` is a dependency graph written out as a seque
 
 ---
 
-### 3.22 Capability bits read against the wrong revision of a specification
+## 22. Capability bits read against the wrong revision of a specification
 
 **Situation.** The graphics adapter reported a capability word of `0x03`, and the driver concluded it supported neither of the two features it had checked for.
 
@@ -429,7 +298,7 @@ The initialisation order in `kmain` is a dependency graph written out as a seque
 
 ---
 
-### 3.23 A line-padding loop that became an infinite loop
+## 23. A line-padding loop that became an infinite loop
 
 **Situation.** Two symptoms were reported that sounded unrelated. In the text console, running `demo` made the screen scroll continuously and never stop. In the graphical desktop, the same command froze the display with no mouse pointer.
 
@@ -447,7 +316,7 @@ Two things are worth taking from it. The first is that the original fix was righ
 
 ---
 
-### 3.24 A demonstration that could not be watched
+## 24. A demonstration that could not be watched
 
 **Situation.** With the hang fixed, the multitasking step of the guided demo still arrived all at once in the graphical terminal: nothing, then thirty characters together.
 
@@ -457,7 +326,9 @@ Two things are worth taking from it. The first is that the original fix was righ
 
 **Result.** The characters appear as the tasks produce them. Measured across the demo, consecutive frames now differ; before the change they were pixel-identical.
 
-### 3.25 Dragging a window took the entire processor
+---
+
+## 25. Dragging a window took the entire processor
 
 **Situation.** Dragging any window pinned the CPU. It was not subtle: over a ten-second drag the idle task received zero ticks and the context-switch counter did not move at all, which means the render loop had the machine to itself for the whole drag.
 
@@ -471,7 +342,7 @@ Two bugs on the way there were worth as much as the fix. The first version pushe
 
 ---
 
-### 3.26 The graphics adapter made the drag slower, not faster
+## 26. The graphics adapter made the drag slower, not faster
 
 **Situation.** Moving a window is a block copy, which is exactly what a 2D graphics engine is for. The adapter advertises the capability and the driver had a `RECT_COPY` command written for it. Nothing had ever called it.
 
@@ -487,7 +358,7 @@ The code stayed, defaulted off, with the measurement written into the comment be
 
 ---
 
-### 3.27 Three background workers appeared to eat the whole machine
+## 27. Three background workers appeared to eat the whole machine
 
 **Situation.** Starting three background worker threads showed them accumulating CPU time fast enough to look as though they owned the processor, while the idle task starved.
 
@@ -503,7 +374,7 @@ The tuning took two passes and both are worth recording. At a twenty-thousand-it
 
 ---
 
-### 3.28 A window sank behind the panels a second after being clicked
+## 28. A window sank behind the panels a second after being clicked
 
 **Situation.** Clicking Notepad brought it to the front, and roughly a second later it dropped behind Task Manager and Kernel Lab on its own, with nobody touching the mouse. Clicking again repeated the cycle, so the window could not be used.
 
@@ -519,7 +390,7 @@ The general shape of the mistake is worth keeping: a partial repaint is an asser
 
 ---
 
-### 3.29 The system call interface existed and nothing used it
+## 29. The system call interface existed and nothing used it
 
 **Situation.** The kernel implements system calls properly — one interrupt gate with a descriptor privilege level of 3, four calls behind it, and a ring 3 program that the processor kills when it reaches for a hardware port. But `int 0x80` appeared on exactly two lines in the whole source tree, both inside the demonstration code. Nothing a user of the desktop could do would ever produce a system call.
 
@@ -535,7 +406,7 @@ The scope is stated rather than blurred. One service is routed through the gate,
 
 ---
 
-### 3.30 A script that only broke when it was read aloud
+## 30. A script that only broke when it was read aloud
 
 **Situation.** The presentation script for the project demonstration was written, reviewed and looked correct. Walking through it in front of the running system, two lines did not survive contact.
 
@@ -548,104 +419,3 @@ The scope is stated rather than blurred. One service is routed through the gate,
 The lesson is the cheapest one in the project and the easiest to skip: a demonstration script is code, and reading it is not testing it.
 
 ---
-
-## 4. Results
-
-### 4.1 What works
-
-All of the "must have" list in [`PROJECT_PLAN.md`](PROJECT_PLAN.md) §6, plus both Tier 3 stretch goals:
-
-- Boots under GRUB in QEMU; multiboot magic verified against the value the bootloader leaves in `eax`
-- VGA text output with colour and scrolling; serial debug channel loggable to a file
-- Own GDT with ring 0 and ring 3 descriptors and a TSS
-- 256-entry IDT; CPU exceptions produce a full diagnostic including register dump
-- PIC remapped to vectors 32–47; PIT at 100 Hz; interrupt-driven PS/2 keyboard
-- Paging enabled, 123 MB identity mapped, page 0 unmapped
-- Heap allocator with splitting, coalescing, exhaustion handling and corruption detection
-- Preemptive round-robin scheduling with stack guard words and reaping of finished tasks
-- Spinlock, mutex and semaphore; race condition demonstrated failing then fixed
-- Bounded-buffer producer/consumer: 24 items through 4 slots, both sides blocking
-- Ring 3 tasks with `int 0x80` system calls
-- Faults contained: the offending task dies, the kernel and shell continue
-- Shell with 25 commands and arrow-key command history, live kernel monitor, `demo` walkthrough, `selftest`
-- PCI bus enumeration, and a VMware SVGA-II driver using the adapter's command FIFO
-- A 1920x1080 32-bit graphical desktop: draggable windows, a taskbar with a live clock, a Start menu, a switchable wallpaper, a terminal with mouse-wheel scrollback, a file manager, Task Manager, Notepad, and Kernel Lab
-- Shell experiments (scheduler, synchronisation, faults, GPU) remain as commands; the same primitives are also reachable from **Start → Kernel Lab**
-- Anti-aliased text rendered from greyscale coverage atlases generated at build time
-- An ATA-backed filesystem with create, read, write, append and delete; writes survive reboot when a disk is attached, and fall back to RAM when it is not
-- Atomic console output: `kprintf` defers preemption so concurrent tasks cannot splice each other's lines
-- `make run`, `make test` and `make debug` from a clean clone
-
-### 4.2 What does not work
-
-The limitations in §1.3 are the honest list: memory is not isolated between rings, syscall pointers are unvalidated, the scheduler has no priorities, and the race-variance check is statistical. None of these were discovered late; all are consequences of scope decisions.
-
-The filesystem is write-through to ATA when a disk answered IDENTIFY, and RAM-only when none did. The namespace above the block layer is the same in both cases: names, growable allocations, timestamps. The on-disk format is sized for this table (64 files, 64 KB each), not a general-purpose volume.
-
-The 3D pipeline is the one feature that was implemented and could not be demonstrated. The driver is complete and the adapter advertises the 3D capability bit, but it reports a 3D hardware version of zero, which is the adapter's way of saying the host will not expose the pipeline to this guest. The driver correctly declines rather than issuing commands into a FIFO that will not execute them. 2D acceleration through the same command FIFO does work and is measurable.
-
-One further note: booting on real hardware (Tier 3 item 21) was **not attempted**. The kernel is built as a GRUB rescue ISO and should boot from a USB stick on a BIOS or CSM-enabled machine, but this has only ever run under QEMU. Claiming it works on real hardware without having tried it would be exactly the kind of unverified assertion this report tries to avoid.
-
-### 4.3 Verification
-
-Printed output proves nothing on its own — a single loop emitting `A B A B` is indistinguishable from real preemption. Every feature is therefore verified by one of three methods:
-
-1. **Ablation** — disable the mechanism and show the system fails as theory predicts
-2. **Hardware-authored values** — display registers the CPU wrote, which we never assigned
-3. **Nondeterminism** — genuine concurrency gives different results across runs; a fake is repeatable
-
-| Feature | Method | What establishes it | Observed |
-|---|---|---|---|
-| Preemption | Ablation | `preempt off` stops involuntary switches entirely; `preempt on` resumes them | PASS, both directions |
-| Preemption | Side effect | A task producing **no output**, only incrementing a counter, shows a non-zero count afterwards | counter ≈ 1.2 × 10⁸ |
-| Preemption | Interleaving | Three tasks in tight loops with no yields produce mixed output | `AAAABBBBCCCCAAAAABBBBB…` |
-| Scheduler fairness | Measurement | Per-task tick counts comparable; no task starved | 10, 10, 11, 14 ticks |
-| Heap | Behavioural | Non-overlap, cross-block integrity, address reuse after free, coalescing, NULL on exhaustion | 7 checks PASS |
-| Heap | Integrity | Magic headers detect corruption; `heap_check()` walks the block list | PASS |
-| Mutex | Nondeterminism | 5 unlocked runs give scattered wrong totals; locked runs exact | `93 78 84 63 89` vs `100 100` |
-| Timer | Independence | Tick counter advances while the CPU sits in `hlt` | PASS |
-| Page fault | Hardware value | `CR2` contains the address typed at the shell | typed `0xdeadb000`, CPU reported `deadb000` |
-| Null dereference | Hardware value | `CR2` reads `0x00000000`, error code decodes as not-present, read | PASS |
-| GPF | Hardware value | Error code is the offending selector | typed selector `0x80`, CPU reported `0x80` |
-| Fault containment | Behavioural | Shell accepts further commands after a task is killed | PASS |
-| Ring 3 | Hardware value | Saved `CS` reads `0x1B` — low two bits are the privilege level | PASS |
-| Ring 3 | Ablation | Direct port I/O raises a GPF; the same task via syscall succeeds | PASS, both |
-
-**Automated:** `selftest` runs 30 checks in-kernel. `make test` boots headless, captures serial output, and fails the build unless it reports zero failures. Verified stable across repeated boots.
-
-**Screenshots** from the running kernel are in [`docs/images/`](docs/images/). The three-minute live walkthrough is [`docs/SHOWCASE.md`](docs/SHOWCASE.md).
-
----
-
-## 5. Reflection
-
-### 5.1 What we would do differently
-
-**Set up binary inspection before writing code, not after the first mystery.** `objdump -h` and `readelf -S` resolved §3.1 in minutes after hours of reading correct source. On bare metal the layout of the output file is part of the program's correctness.
-
-**Distrust the optimiser earlier.** §3.8 cost real time and the fix was one line. Anything that depends on undefined behaviour — deliberate faults especially — belongs in assembly from the start.
-
-**Add header dependency tracking on the first day.** §3.7 produced a binary that contradicted its own source, which is a uniquely disorienting failure and is prevented by two compiler flags.
-
-**Treat demonstrations as code that can be wrong.** Three separate defects (§3.5, §3.6, §3.12) were in the demonstration rather than the kernel: one proved nothing, one proved too much, one claimed evidence it had not gathered. Verification code deserves the same scepticism as the code it verifies.
-
-### 5.2 What we learned
-
-**An interrupt is the only mechanism by which a kernel regains control of the CPU.** This stops being abstract the moment you write `preempt off` and watch one task hold the machine forever. Without a timer, a runaway task owns it permanently — no amount of kernel code can intervene, because none of it is running.
-
-**A task is a stack.** Context switching looks mysterious until you write it: save the registers the calling convention requires you to preserve, swap the stack pointer, pop the other set back, and `ret`. The `ret` returns somewhere entirely different from where you called from, and that is the whole trick. Creating a task means building a stack that *looks* as if it had already been switched away from.
-
-**Privilege is enforced by hardware, not by the kernel.** Ring 3 code attempting port I/O is not stopped by a check we wrote — the CPU refuses and raises a fault. The kernel's role is to set up the descriptors, provide one controlled door, and decide what to do with the corpse.
-
-**"It compiled" means very little without a runtime underneath.** Four of the defects above (§3.1, §3.2, §3.7, §3.8) were introduced by the toolchain doing exactly what it was asked, in a context where nothing existed to catch the consequences.
-
----
-
-## 6. References
-
-| Resource | Use |
-|---|---|
-| [The Little Book About OS Development](https://littleosbook.github.io) | GRUB multiboot, i386 setup, VGA text, IDT, PIT, keyboard, paging, ring 3 |
-| [OSDev Wiki](https://wiki.osdev.org) | Reference for PIC remapping, PIT programming, PS/2 protocol, GDT/TSS layout, paging structures |
-| Intel Software Developer's Manual, Vol. 3 | Authoritative on protected mode, descriptor formats, exception behaviour, control registers |
-| Multiboot Specification 0.6.96 | Header format, the 8 KB search window, boot handover state |
