@@ -3807,7 +3807,7 @@ static void draw_demos(const window_t *win, bool active)
 
         case ENTRY_BG: {
             int workers = demo_worker_count();
-            char cap[48];
+            char cap[48], detail[64];
             int  n = 0;
 
             if (workers > 0) {
@@ -3818,10 +3818,24 @@ static void draw_demos(const window_t *win, bool active)
                 n = str_append(cap, n, "No workers running");
             }
 
-            demo_lamp(&L, workers > 0, cap,
-                      workers > 0
-                      ? "Open Task Manager and watch their Ticks rise."
-                      : "Start them, then open Task Manager.");
+            if (workers > 0) {
+                /* Sum the four slots' loop counters and print the total
+                 * here, in this panel, rather than sending the viewer to
+                 * Task Manager to see a number move. A caption that says
+                 * "workers are spinning" and then sits still is
+                 * indistinguishable from one that is lying; a total that
+                 * climbs every redraw is not. Kept short: 25 characters at
+                 * the widest, well under the 47-character caption this
+                 * panel already draws safely elsewhere. */
+                uint32_t total = background_counter(0) + background_counter(1)
+                               + background_counter(2) + background_counter(3);
+                int dn = str_append(detail, 0, "loops so far: ");
+                u32_to_str(total, detail + dn);
+            } else {
+                str_append(detail, 0, "Start them, then watch the number climb.");
+            }
+
+            demo_lamp(&L, workers > 0, cap, detail);
             break;
         }
 
