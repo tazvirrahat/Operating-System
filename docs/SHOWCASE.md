@@ -50,16 +50,19 @@ Two separate claims here, and they need different evidence.
 **That they are scheduled** — genuinely preempted rather than run one after
 another — is proved by the interleaving vanishing when the timer is off.
 
-**Do:** point at **System idle**, then Kernel Lab → **Background workers** →
-**Start 3 workers**. Point at the **STACK** column.
+**Do:** point at **System idle** in Task Manager. Say this *before* starting
+anything — at rest idle sits around 85%, and that is the point.
 
-> "This is Task Manager reading my scheduler live. The busiest thing is the idle
-> task — no work, so the processor is halted."
->
-> "Three threads. And look at the stack column — eight kilobytes each. They're
-> separate allocations off the heap, and every one has a guard word at the
-> bottom that the kernel checks on every boot. That's what makes them threads
-> and not just three function calls."
+> "This is Task Manager reading my scheduler live. The busiest thing on the
+> machine is the idle task — no work to do, so the processor is halted."
+
+**Do:** Kernel Lab → **Background workers** → **Start 3 workers**. Point at the
+**Memory** column.
+
+> "Three threads. And look at the memory column — eight kilobytes each. That's a
+> separate stack per thread, allocated off the heap, and every one has a guard
+> word at the bottom that the kernel checks on every boot. That's what makes
+> them threads and not just three function calls."
 
 **Do:** select one worker, click **End task**.
 
@@ -193,6 +196,9 @@ not during.
 - **Sharing OFF kills the mouse too**, for ten seconds. That's the demo working.
   Don't click around — it releases on its own.
 - **The unlocked race is a race.** Now and then it comes out clean. Run it again.
+- **The letters appear inside Kernel Lab**, in the dark output console at the
+  bottom of its right-hand pane — not in the Terminal. You do not need Terminal
+  visible for part 1.
 
 If Notepad's Save ever says "RAM only", the disk didn't attach — don't claim the
 file survives a reboot.
